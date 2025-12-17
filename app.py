@@ -3,6 +3,7 @@ AI応募適合度チェッカー - メインアプリケーション
 Streamlitを使用した1ページ完結型Webアプリケーション
 """
 import os
+import re
 import streamlit as st
 import time
 from datetime import datetime
@@ -15,6 +16,69 @@ from f4_generate_improvements import generate_improvements
 
 # 環境変数読み込み
 load_dotenv()
+
+
+def extract_important_sections(text: str, text_type: str) -> str:
+    """
+    テキストから重要なセクションのみを抽出（自動短縮）
+
+    Args:
+        text: 元のテキスト
+        text_type: "job" or "resume"
+
+    Returns:
+        str: 短縮されたテキスト
+    """
+    lines = text.split('\n')
+    important_lines = []
+    include_section = False
+
+    if text_type == "job":
+        # 求人票の重要セクション
+        important_keywords = [
+            '必須', 'required', '応募資格', '求める',
+            '歓迎', 'preferred', '尚可', '望ましい',
+            '業務内容', '職務内容', '仕事内容', '業務概要',
+            'スキル', 'skill', '経験', 'experience'
+        ]
+    else:  # resume
+        # 職務経歴書の重要セクション
+        important_keywords = [
+            '職務経歴', '経歴', '業務経験', '担当業務',
+            'スキル', 'skill', '技術', 'technology',
+            '実績', '成果', 'achievement', 'プロジェクト',
+            '資格', 'certification', '言語', 'language'
+        ]
+
+    for line in lines:
+        line_lower = line.lower()
+
+        # セクションヘッダーの検出（■、●、【】、## などで始まる行）
+        is_header = bool(re.match(r'^[■●◆▲【\#\*]+', line.strip()))
+
+        # 重要キーワードを含むか
+        contains_keyword = any(kw in line_lower for kw in important_keywords)
+
+        if is_header:
+            # 新しいセクション開始
+            include_section = contains_keyword
+            if include_section:
+                important_lines.append(line)
+        elif include_section:
+            # 現在のセクションが重要な場合は行を含める
+            important_lines.append(line)
+        elif contains_keyword:
+            # セクション外でも重要キーワードを含む行は含める
+            important_lines.append(line)
+
+    # 抽出した行を結合
+    extracted = '\n'.join(important_lines)
+
+    # 空の場合は元のテキストの先頭部分を返す
+    if not extracted.strip():
+        return text[:10000]
+
+    return extracted
 
 
 # Streamlitメニュー項目の日本語翻訳マッピング
@@ -399,6 +463,14 @@ def main():
                 key="strict_mode"
             )
 
+        st.markdown("**入力テキスト設定**")
+        auto_truncate = st.checkbox(
+            "自動短縮を有効化（20,000文字以上の場合、重要部分のみ抽出）",
+            value=True,
+            key="auto_truncate",
+            help="入力が長い場合、必須スキル・歓迎スキル・業務内容などの重要セクションのみを自動抽出します"
+        )
+
     st.divider()
 
     # ==================== 実行ボタン ====================
@@ -430,25 +502,59 @@ def main():
                     "`ANTHROPIC_API_KEY` を設定してください。")
             st.stop()
 
-        # 文字数チェック（大きすぎる場合に警告）
+        # 文字数チェックと自動短縮
         job_length = len(job_text)
         resume_length = len(resume_text)
+        truncated_info = []
 
+        # 求人票の処理
         if job_length > 50000:
-            st.error(f"❌ 求人票のテキストが長すぎます（{job_length:,}文字）\n\n"
-                    "50,000文字以下に収めてください。")
-            return
-        elif job_length > 20000:
-            st.warning(f"⚠️ 求人票のテキストが長めです（{job_length:,}文字）\n\n"
-                      "処理時間が長くなる可能性があります。")
+            if auto_truncate:
+                # 自動短縮を試みる
+                job_text = extract_important_sections(job_text, "job")
+                new_length = len(job_text)
+                if new_length > 50000:
+                    st.error(f"❌ 求人票のテキストが長すぎます（{job_length:,}文字 → 短縮後 {new_length:,}文字）\n\n"
+                            "自動短縮後も50,000文字を超えています。手動で短縮してください。")
+                    return
+                else:
+                    truncated_info.append(f"✂️ 求人票を自動短縮: {job_length:,}文字 → {new_length:,}文字")
+            else:
+                st.error(f"❌ 求人票のテキストが長すぎます（{job_length:,}文字）\n\n"
+                        "50,000文字以下に収めるか、詳細設定で「自動短縮」を有効にしてください。")
+                return
+        elif job_length > 20000 and auto_truncate:
+            # 20,000文字以上の場合も自動短縮
+            job_text = extract_important_sections(job_text, "job")
+            new_length = len(job_text)
+            truncated_info.append(f"✂️ 求人票を自動短縮: {job_length:,}文字 → {new_length:,}文字")
 
+        # 職務経歴書の処理
         if resume_length > 50000:
-            st.error(f"❌ 職務経歴書のテキストが長すぎます（{resume_length:,}文字）\n\n"
-                    "50,000文字以下に収めてください。")
-            return
-        elif resume_length > 20000:
-            st.warning(f"⚠️ 職務経歴書のテキストが長めです（{resume_length:,}文字）\n\n"
-                      "処理時間が長くなる可能性があります。")
+            if auto_truncate:
+                # 自動短縮を試みる
+                resume_text = extract_important_sections(resume_text, "resume")
+                new_length = len(resume_text)
+                if new_length > 50000:
+                    st.error(f"❌ 職務経歴書のテキストが長すぎます（{resume_length:,}文字 → 短縮後 {new_length:,}文字）\n\n"
+                            "自動短縮後も50,000文字を超えています。手動で短縮してください。")
+                    return
+                else:
+                    truncated_info.append(f"✂️ 職務経歴書を自動短縮: {resume_length:,}文字 → {new_length:,}文字")
+            else:
+                st.error(f"❌ 職務経歴書のテキストが長すぎます（{resume_length:,}文字）\n\n"
+                        "50,000文字以下に収めるか、詳細設定で「自動短縮」を有効にしてください。")
+                return
+        elif resume_length > 20000 and auto_truncate:
+            # 20,000文字以上の場合も自動短縮
+            resume_text = extract_important_sections(resume_text, "resume")
+            new_length = len(resume_text)
+            truncated_info.append(f"✂️ 職務経歴書を自動短縮: {resume_length:,}文字 → {new_length:,}文字")
+
+        # 短縮情報を表示
+        if truncated_info:
+            st.info("📝 **入力テキストの自動短縮**\n\n" + "\n".join(truncated_info) +
+                   "\n\n重要セクション（必須スキル、歓迎スキル、業務内容など）のみを抽出しました。")
 
         # オプション辞書を作成
         options = {

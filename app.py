@@ -12,6 +12,248 @@ from f3_score import calculate_scores
 from f4_generate_improvements import generate_improvements
 
 
+# Streamlitメニュー項目の日本語翻訳マッピング
+STREAMLIT_MENU_TRANSLATIONS = {
+    'Rerun': '再実行',
+    'Settings': '設定',
+    'Print': '印刷',
+    'Record a screencast': 'スクリーンキャストを録画',
+    'Developer options': '開発者オプション',
+    'Clear cache': 'キャッシュをクリア'
+}
+
+
+def inject_menu_translations():
+    """Streamlitメニュー項目を日本語化するJavaScriptを注入"""
+    import json
+    
+    # Pythonの翻訳マッピングをJSONに変換
+    translations_json = json.dumps(STREAMLIT_MENU_TRANSLATIONS, ensure_ascii=False)
+    
+    return f"""
+    <style>
+    /* Deployボタンを非表示 */
+    button[kind="header"][class*="deploy"],
+    button[kind="header"][class*="Deploy"],
+    a[href*="deploy.streamlit"],
+    [data-testid*="stToolbarDeployButton"],
+    [data-testid*="Deploy"],
+    button[title*="Deploy"],
+    button[aria-label*="Deploy"] {{
+        display: none !important;
+        visibility: hidden !important;
+    }}
+    </style>
+    <script>
+    (function() {{
+        'use strict';
+        
+        // Pythonから渡された翻訳マッピング
+        const translations = {translations_json};
+        
+        // すべてのテキストノードを再帰的に検索して置き換え
+        function replaceTextInElement(element) {{
+            if (!element) return;
+            
+            // すべてのテキストノードを検索
+            const walker = document.createTreeWalker(
+                element,
+                NodeFilter.SHOW_TEXT,
+                {{
+                    acceptNode: function(node) {{
+                        // 親要素がscriptやstyleタグの場合はスキップ
+                        let parent = node.parentElement;
+                        while (parent) {{
+                            if (parent.tagName === 'SCRIPT' || parent.tagName === 'STYLE') {{
+                                return NodeFilter.FILTER_REJECT;
+                            }}
+                            parent = parent.parentElement;
+                        }}
+                        return NodeFilter.FILTER_ACCEPT;
+                    }}
+                }},
+                false
+            );
+            
+            const textNodes = [];
+            let node;
+            while (node = walker.nextNode()) {{
+                textNodes.push(node);
+            }}
+            
+            // テキストノードを置き換え
+            textNodes.forEach(textNode => {{
+                const originalText = textNode.textContent;
+                const trimmedText = originalText.trim();
+                
+                // 完全一致するテキストを置き換え
+                if (translations[trimmedText]) {{
+                    textNode.textContent = originalText.replace(trimmedText, translations[trimmedText]);
+                }}
+            }});
+            
+            // 要素内の直接のテキストも確認（子要素がない場合）
+            const allElements = element.querySelectorAll('*');
+            allElements.forEach(el => {{
+                // 子要素がない、または子要素がSVGのみの場合
+                const hasOnlySvg = el.children.length === 1 && el.querySelector('svg');
+                if (el.children.length === 0 || hasOnlySvg) {{
+                    const text = el.textContent.trim();
+                    if (translations[text]) {{
+                        // SVGを保持
+                        const svg = el.querySelector('svg');
+                        if (svg) {{
+                            const svgClone = svg.cloneNode(true);
+                            el.innerHTML = '';
+                            el.appendChild(svgClone);
+                            el.appendChild(document.createTextNode(' ' + translations[text]));
+                        }} else {{
+                            el.textContent = translations[text];
+                        }}
+                    }}
+                }}
+            }});
+        }}
+        
+        // メニュー項目を日本語化する関数
+        function translateMenuItems() {{
+            // メニューコンテナを検索（複数のパターンに対応）
+            const menuContainers = [
+                '[role="menu"]',
+                '[data-baseweb="popover"]',
+                '[data-baseweb="menu"]',
+                'ul[role="menu"]',
+                '[data-testid="stHeader"] [role="menu"]'
+            ];
+            
+            menuContainers.forEach(selector => {{
+                try {{
+                    const containers = document.querySelectorAll(selector);
+                    containers.forEach(container => {{
+                        replaceTextInElement(container);
+                    }});
+                }} catch (e) {{
+                    // セレクタが無効な場合は無視
+                }}
+            }});
+            
+            // メニュー項目を直接検索
+            const menuItemSelectors = [
+                '[role="menuitem"]',
+                '[data-baseweb="menu-item"]',
+                'li[role="menuitem"]'
+            ];
+            
+            menuItemSelectors.forEach(selector => {{
+                try {{
+                    const items = document.querySelectorAll(selector);
+                    items.forEach(item => {{
+                        replaceTextInElement(item);
+                    }});
+                }} catch (e) {{
+                    // セレクタが無効な場合は無視
+                }}
+            }});
+            
+            // ヘッダー内のすべての要素も確認
+            const header = document.querySelector('[data-testid="stHeader"]');
+            if (header) {{
+                replaceTextInElement(header);
+            }}
+        }}
+        
+        // Deployボタンを非表示
+        function hideDeployButton() {{
+            const allElements = document.querySelectorAll('*');
+            allElements.forEach(el => {{
+                const text = el.textContent.trim();
+                if (text === 'Deploy') {{
+                    if (el.tagName === 'BUTTON' || 
+                        el.getAttribute('role') === 'button' ||
+                        el.closest('button')) {{
+                        el.style.display = 'none';
+                        el.style.visibility = 'hidden';
+                    }}
+                }}
+            }});
+        }}
+        
+        // 実行関数
+        function executeTranslation() {{
+            translateMenuItems();
+            hideDeployButton();
+        }}
+        
+        // 初期実行
+        if (document.readyState === 'loading') {{
+            document.addEventListener('DOMContentLoaded', function() {{
+                executeTranslation();
+                // 少し遅延して再実行（DOMが完全に構築されるまで待つ）
+                setTimeout(executeTranslation, 100);
+                setTimeout(executeTranslation, 500);
+            }});
+        }} else {{
+            executeTranslation();
+            setTimeout(executeTranslation, 100);
+            setTimeout(executeTranslation, 500);
+        }}
+        
+        // MutationObserverで監視（より積極的に）
+        const observer = new MutationObserver(function(mutations) {{
+            let shouldTranslate = false;
+            mutations.forEach(mutation => {{
+                if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {{
+                    mutation.addedNodes.forEach(node => {{
+                        if (node.nodeType === Node.ELEMENT_NODE) {{
+                            const el = node;
+                            if (el.getAttribute('role') === 'menu' ||
+                                el.getAttribute('role') === 'menuitem' ||
+                                el.querySelector('[role="menu"]') ||
+                                el.querySelector('[role="menuitem"]')) {{
+                                shouldTranslate = true;
+                            }}
+                        }}
+                    }});
+                }}
+            }});
+            if (shouldTranslate) {{
+                setTimeout(executeTranslation, 10);
+                setTimeout(executeTranslation, 100);
+            }}
+        }});
+        observer.observe(document.body, {{
+            childList: true,
+            subtree: true,
+            characterData: true
+        }});
+        
+        // クリックイベントで実行（メニューが開いた時）
+        document.addEventListener('click', function(e) {{
+            // メニューボタンがクリックされた可能性がある
+            const target = e.target;
+            if (target.closest('[data-testid="stHeader"]') || 
+                target.closest('button[kind="header"]')) {{
+                setTimeout(executeTranslation, 10);
+                setTimeout(executeTranslation, 50);
+                setTimeout(executeTranslation, 150);
+                setTimeout(executeTranslation, 300);
+            }}
+        }}, true);
+        
+        // フォーカスイベントでも実行（メニューが開く可能性がある）
+        document.addEventListener('focusin', function(e) {{
+            if (e.target.closest('[data-testid="stHeader"]')) {{
+                setTimeout(executeTranslation, 50);
+            }}
+        }}, true);
+        
+        // 定期的に実行（念のため・パフォーマンスを考慮して間隔を延長）
+        setInterval(executeTranslation, 2000);
+    }})();
+    </script>
+    """
+
+
 def main():
     # ページ設定
     st.set_page_config(
@@ -19,6 +261,9 @@ def main():
         page_icon="📊",
         layout="wide"
     )
+
+    # StreamlitのUIボタンを日本語化（Pythonで翻訳マッピングを管理）
+    st.markdown(inject_menu_translations(), unsafe_allow_html=True)
 
     # タイトル
     st.title("📊 AI応募適合度チェッカー")

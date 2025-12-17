@@ -2,14 +2,19 @@
 AI応募適合度チェッカー - メインアプリケーション
 Streamlitを使用した1ページ完結型Webアプリケーション
 """
+import os
 import streamlit as st
 import time
 from datetime import datetime
+from dotenv import load_dotenv
 
 from f1_extract_requirements import extract_requirements
 from f2_extract_evidence import extract_evidence
 from f3_score import calculate_scores
 from f4_generate_improvements import generate_improvements
+
+# 環境変数読み込み
+load_dotenv()
 
 
 # Streamlitメニュー項目の日本語翻訳マッピング
@@ -255,6 +260,23 @@ def inject_menu_translations():
 
 
 def main():
+    # 環境変数のチェック（Streamlit CloudでSecrets入れ忘れを検知）
+    openai_key = os.getenv("OPENAI_API_KEY")
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+    
+    if not openai_key and not anthropic_key:
+        st.error("⚠️ **APIキーが設定されていません**\n\n"
+                "`OPENAI_API_KEY` または `ANTHROPIC_API_KEY` のいずれかをStreamlit Secretsに追加してください。\n\n"
+                "設定方法：\n"
+                "1. Streamlit Cloudのダッシュボードで「Secrets」を開く\n"
+                "2. 以下の形式で追加：\n"
+                "```\n"
+                "OPENAI_API_KEY=your_api_key_here\n"
+                "# または\n"
+                "ANTHROPIC_API_KEY=your_api_key_here\n"
+                "```")
+        st.stop()
+    
     # ページ設定
     st.set_page_config(
         page_title="AI応募適合度チェッカー",
@@ -404,6 +426,7 @@ def main():
             "max_must": max_must,
             "max_want": max_want,
             "strict_mode": strict_mode,
+            "max_gaps": 5,  # F4の改善案生成で処理するギャップの最大件数（実行時間短縮のため）
         }
 
         # 実行時間計測開始

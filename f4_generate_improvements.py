@@ -63,6 +63,7 @@ def generate_improvements(
     sorted_gaps = _prioritize_gaps(gaps, max_count=max_gaps)
 
     # LLMの初期化
+    # F4は改善案生成のため、より高精度なモデル（gpt-4o）をデフォルトに
     try:
         if llm_provider == "anthropic":
             llm = ChatAnthropic(
@@ -72,7 +73,7 @@ def generate_improvements(
             )
         else:  # openai
             llm = ChatOpenAI(
-                model=model_name or "gpt-4o-mini",
+                model=model_name or "gpt-4o",  # F4は改善案生成のため、より高精度なモデルを使用
                 temperature=0.2,
                 api_key=os.getenv("OPENAI_API_KEY")
             )

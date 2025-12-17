@@ -82,7 +82,17 @@ def extract_requirements(
 3. 各要件には必ず求人票からの原文引用（job_quote）を含めること
 4. Must要件は最大{max_must}件、Want要件は最大{max_want}件まで
 5. importance（重要度）は1〜5で設定（5が最重要）
-6. req_idは仮でM1,M2...、W1,W2...のように連番を振る（後で採番し直す）{strict_instruction}
+6. req_idは仮でM1,M2...、W1,W2...のように連番を振る（後で採番し直す）
+
+重複・粒度に関する重要ルール：
+7. **同じ内容の重複は絶対に禁止**：MustとWantで同じ技術・経験を重複させない
+   例：「Python経験3年以上」がMustにあれば、Wantに「Python経験」を入れない
+8. **粒度は適切に**：細かすぎず粗すぎず、1要件につき1つの明確なスキル/経験
+   良い例：「Python開発経験3年以上」
+   悪い例：「Python」「3年以上」を別々にする（細かすぎ）
+   悪い例：「PythonとJavaとRubyの経験」（粗すぎ、分割すべき）
+9. **MustとWantの使い分け**：同じ技術でもレベルが違う場合は明示
+   例：Must「Python基本経験」、Want「Python上級（フレームワーク開発経験）」{strict_instruction}
 
 {format_instructions}
 """,
@@ -127,34 +137,59 @@ def extract_requirements(
 def _merge_duplicate_requirements(requirements: List[Requirement]) -> List[Requirement]:
     """
     同じ意味の要件が複数出たら統合（Must/Wantの件数が無駄に増えるのを防ぐ）
-    
+
+    重複パターン:
+    1. 同じカテゴリ内での重複 → 統合
+    2. MustとWantをまたぐ重複 → Mustを優先して残す
+
     Args:
         requirements: 抽出された要件リスト
-        
+
     Returns:
         List[Requirement]: 統合後の要件リスト
     """
     if len(requirements) <= 1:
         return requirements
-    
+
+    # ステップ1: MustとWantをまたぐ重複を検出し、Wantを除外
+    must_reqs = [r for r in requirements if r.category == RequirementType.MUST]
+    want_reqs = [r for r in requirements if r.category == RequirementType.WANT]
+
+    filtered_want_reqs = []
+    for want_req in want_reqs:
+        # Mustに同じ内容がないかチェック
+        has_duplicate_in_must = False
+        for must_req in must_reqs:
+            if _are_similar_requirements(want_req, must_req):
+                # Mustに同じ内容があるので、このWantは除外
+                has_duplicate_in_must = True
+                break
+
+        if not has_duplicate_in_must:
+            filtered_want_reqs.append(want_req)
+
+    # Mustとフィルタリング後のWantを結合
+    requirements = must_reqs + filtered_want_reqs
+
+    # ステップ2: 同じカテゴリ内での重複統合（既存ロジック）
     merged = []
     used_indices = set()
-    
+
     for i, req1 in enumerate(requirements):
         if i in used_indices:
             continue
-        
+
         # 同じカテゴリの要件を探す
         similar_reqs = [req1]
         for j, req2 in enumerate(requirements[i+1:], start=i+1):
             if j in used_indices:
                 continue
-            
+
             # 同じカテゴリで、意味が似ているかチェック
             if req1.category == req2.category and _are_similar_requirements(req1, req2):
                 similar_reqs.append(req2)
                 used_indices.add(j)
-        
+
         # 統合
         if len(similar_reqs) > 1:
             # 最も詳細な説明を選ぶ、または統合
@@ -162,52 +197,71 @@ def _merge_duplicate_requirements(requirements: List[Requirement]) -> List[Requi
             merged.append(merged_req)
         else:
             merged.append(req1)
-        
+
         used_indices.add(i)
-    
+
     return merged
 
 
 def _are_similar_requirements(req1: Requirement, req2: Requirement) -> bool:
     """
     2つの要件が同じ意味かどうかを判定
-    
+
     Args:
         req1: 要件1
         req2: 要件2
-        
+
     Returns:
         bool: 同じ意味ならTrue
     """
     desc1 = req1.description.lower()
     desc2 = req2.description.lower()
-    
-    # 完全一致
+
+    # 1. 完全一致
     if desc1 == desc2:
         return True
-    
-    # 一方が他方を含む（例: "Python経験" と "Python開発経験3年以上"）
+
+    # 2. 一方が他方を含む（例: "Python経験" と "Python開発経験3年以上"）
     if desc1 in desc2 or desc2 in desc1:
         return True
-    
-    # キーワードの重複率が高い（70%以上）
+
+    # 3. 技術キーワードが一致（カタカナ、英語）
+    tech_keywords1 = set(re.findall(r'[A-Za-z]+|[ァ-ヶー]+', desc1))
+    tech_keywords2 = set(re.findall(r'[A-Za-z]+|[ァ-ヶー]+', desc2))
+
+    # 技術キーワードが2つ以上一致し、それが主要キーワードの場合
+    common_tech = tech_keywords1 & tech_keywords2
+    if len(common_tech) >= 2:
+        # 長いキーワード（3文字以上）が含まれている場合
+        long_common = {k for k in common_tech if len(k) >= 3}
+        if long_common:
+            return True
+
+    # 4. 同じ技術の異なるレベル表現を検出
+    # 例: "Python経験" と "Python上級経験" は似ているが、レベルが違うので別物として扱う
+    # ただし、単に "Python" だけが一致する場合は重複とみなす
+    if len(tech_keywords1) == 1 and len(tech_keywords2) == 1:
+        if tech_keywords1 == tech_keywords2:
+            return True
+
+    # 5. キーワードの重複率が高い（80%以上に引き上げ、より厳格に）
     words1 = set(desc1.split())
     words2 = set(desc2.split())
-    
+
     if len(words1) == 0 or len(words2) == 0:
         return False
-    
+
     common_words = words1 & words2
     overlap_ratio = len(common_words) / max(len(words1), len(words2))
-    
-    # 70%以上のキーワードが一致し、かつ主要キーワードが一致
-    if overlap_ratio >= 0.7:
-        # 主要キーワード（技術名、年数など）が一致するか
-        important_words1 = {w for w in words1 if len(w) >= 3 and not w.isdigit()}
-        important_words2 = {w for w in words2 if len(w) >= 3 and not w.isdigit()}
+
+    # 80%以上のキーワードが一致し、かつ主要キーワードが一致
+    if overlap_ratio >= 0.8:
+        # 主要キーワード（3文字以上の単語）が一致するか
+        important_words1 = {w for w in words1 if len(w) >= 3}
+        important_words2 = {w for w in words2 if len(w) >= 3}
         if important_words1 & important_words2:
             return True
-    
+
     return False
 
 

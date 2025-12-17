@@ -418,6 +418,38 @@ def main():
             st.error("❌ 求人票と職務経歴書の両方を入力してください。")
             return
 
+        # 選択されたプロバイダーのAPIキーチェック
+        if llm_provider == "openai" and not openai_key:
+            st.error("❌ **OPENAI_API_KEYが設定されていません**\n\n"
+                    "OpenAIプロバイダーを使用するには、環境変数またはStreamlit Secretsに "
+                    "`OPENAI_API_KEY` を設定してください。")
+            st.stop()
+        elif llm_provider == "anthropic" and not anthropic_key:
+            st.error("❌ **ANTHROPIC_API_KEYが設定されていません**\n\n"
+                    "Anthropicプロバイダーを使用するには、環境変数またはStreamlit Secretsに "
+                    "`ANTHROPIC_API_KEY` を設定してください。")
+            st.stop()
+
+        # 文字数チェック（大きすぎる場合に警告）
+        job_length = len(job_text)
+        resume_length = len(resume_text)
+
+        if job_length > 50000:
+            st.error(f"❌ 求人票のテキストが長すぎます（{job_length:,}文字）\n\n"
+                    "50,000文字以下に収めてください。")
+            return
+        elif job_length > 20000:
+            st.warning(f"⚠️ 求人票のテキストが長めです（{job_length:,}文字）\n\n"
+                      "処理時間が長くなる可能性があります。")
+
+        if resume_length > 50000:
+            st.error(f"❌ 職務経歴書のテキストが長すぎます（{resume_length:,}文字）\n\n"
+                    "50,000文字以下に収めてください。")
+            return
+        elif resume_length > 20000:
+            st.warning(f"⚠️ 職務経歴書のテキストが長めです（{resume_length:,}文字）\n\n"
+                      "処理時間が長くなる可能性があります。")
+
         # オプション辞書を作成
         options = {
             "llm_provider": llm_provider,
@@ -442,6 +474,21 @@ def main():
             with st.spinner("⏳ F2: 職務経歴から根拠を抽出中..."):
                 evidence_map = extract_evidence(resume_text, requirements, options)
                 st.success(f"✅ F2完了: {len(evidence_map)}件の根拠を分析")
+
+            # F2の引用検証結果をチェック
+            invalid_quote_evidences = [
+                (req_id, ev) for req_id, ev in evidence_map.items()
+                if "引用検証失敗" in ev.reason
+            ]
+            if invalid_quote_evidences:
+                req_id_to_desc = {r.req_id: r.description for r in requirements}
+                st.warning(
+                    f"⚠️ **引用検証の警告**\n\n"
+                    f"{len(invalid_quote_evidences)}件の要件で、職務経歴書からの引用が原文に存在しませんでした。\n"
+                    f"LLMが誤って生成した可能性があります。以下の要件の根拠は慎重に確認してください：\n\n"
+                    + "\n".join([f"- [{req_id}] {req_id_to_desc.get(req_id, 'Unknown')}"
+                                for req_id, _ in invalid_quote_evidences])
+                )
 
             # F3: スコア計算
             with st.spinner("⏳ F3: スコアを計算中..."):
@@ -522,6 +569,45 @@ def main():
                 value=f"{len(result['matched'])}/{len(result['gaps'])}",
                 delta=None
             )
+
+        # スコア計算の根拠説明
+        with st.expander("💡 スコアの計算方法", expanded=False):
+            st.markdown("""
+            ### 📐 スコア計算式
+
+            **総合スコア** = Must スコア × **70%** + Want スコア × **30%**
+
+            - **総合スコア**: {total}点 = {must}点 × 0.7 + {want}点 × 0.3
+
+            ### 📊 各スコアの意味
+
+            - **Mustスコア（必須要件）**: 求人票の必須要件に対する適合度
+              - 100点満点で、要件の重要度（weight）に応じて加重平均で計算
+              - 各要件のconfidenceを点数化: HIGH=1.0点、PARTIAL=0.5点、NONE=0.0点
+
+            - **Wantスコア（歓迎要件）**: 求人票の歓迎要件に対する適合度
+              - 100点満点で、要件の重要度（weight）に応じて加重平均で計算
+              - Must要件よりも総合スコアへの寄与度が低い（30%）
+
+            ### 🎯 重み付けの理由
+
+            - **Must要件（70%）**: 必須要件は採用可否に直結するため、高い比重
+            - **Want要件（30%）**: 歓迎要件は「あればプラス」なので、低めの比重
+
+            ### ✅ マッチ判定基準
+
+            各要件のconfidenceレベルに応じて点数化されます:
+
+            | Confidence | 点数 | 判定 | 説明 |
+            |-----------|------|------|------|
+            | ≥ 0.7 (HIGH) | 1.0点 | ✅ マッチ | 職務経歴書に明確な記述あり |
+            | 0.4〜0.7 (PARTIAL) | 0.5点 | ⚠️ 部分マッチ | 部分的な経験あり |
+            | < 0.4 (LOW/NONE) | 0.0点 | ❌ ギャップ | 該当する経験なし |
+            """.format(
+                total=result['score_total'],
+                must=result['score_must'],
+                want=result['score_want']
+            ))
 
         # サマリー
         st.subheader("📝 総評")

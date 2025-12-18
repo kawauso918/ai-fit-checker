@@ -90,6 +90,41 @@ streamlit run app.py
 
 ブラウザで自動的にアプリケーションが開きます。
 
+## サンプルデータ
+
+動作確認やテストに使用できるサンプルデータを用意しています。
+
+### sample_data.py
+
+以下のサンプルデータが含まれています：
+
+**通常モード用**:
+- `SAMPLE_JOB_TEXT`: Web系エンジニアの求人票
+- `SAMPLE_RESUME_TEXT`: 5年経験のWebエンジニアの職務経歴書
+
+**比較モード用**:
+- `SAMPLE_JOB_TEXT_1`: スタートアップのフルスタックエンジニア募集
+- `SAMPLE_JOB_TEXT_2`: 大手企業の社内システム開発エンジニア募集
+- `SAMPLE_JOB_TEXT_3`: AI/機械学習エンジニア募集
+- `SAMPLE_RESUME_TEXT_COMPARISON`: LLM経験を含む職務経歴書
+- `SAMPLE_ACHIEVEMENT_NOTES`: 実績メモのサンプル
+- `SAMPLE_EMPHASIS_AXES`: 企業タイプ別の推奨強調軸
+
+### 使い方
+
+```python
+from sample_data import SAMPLE_JOB_TEXT_1, SAMPLE_JOB_TEXT_2, SAMPLE_JOB_TEXT_3
+from sample_data import SAMPLE_RESUME_TEXT_COMPARISON
+
+# コピーしてStreamlitアプリに貼り付け
+print(SAMPLE_JOB_TEXT_1)  # 求人1
+print(SAMPLE_JOB_TEXT_2)  # 求人2
+print(SAMPLE_JOB_TEXT_3)  # 求人3
+print(SAMPLE_RESUME_TEXT_COMPARISON)  # 職務経歴書
+```
+
+または、ファイルを直接開いてコピー＆ペーストすることもできます。
+
 ## 使用方法
 
 ### 基本的な使い方

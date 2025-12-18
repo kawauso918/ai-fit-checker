@@ -111,9 +111,9 @@ def main():
         print(f"✅ F2完了: {len(evidence_map)}件の根拠を分析 ({f2_time:.2f}秒)")
         print()
 
-        # F3: スコア計算
+        # F3: スコア計算（強調軸なし）
         print("-" * 70)
-        print("F3: スコアを計算中...")
+        print("F3: スコアを計算中（強調軸なし）...")
         print("-" * 70)
         f3_start = time.time()
         score_total, score_must, score_want, matched, gaps, summary = calculate_scores(
@@ -124,13 +124,43 @@ def main():
         print()
 
         # スコア詳細表示
-        print("【スコア詳細】")
+        print("【スコア詳細（強調軸なし）】")
         print(f"  総合スコア: {score_total}点")
         print(f"  Mustスコア: {score_must}点")
         print(f"  Wantスコア: {score_want}点")
         print(f"  マッチ数: {len(matched)}件")
         print(f"  ギャップ数: {len(gaps)}件")
         print()
+
+        # F3: スコア計算（強調軸あり）
+        print("-" * 70)
+        print("F3: スコアを計算中（強調軸あり: 技術力, 運用）...")
+        print("-" * 70)
+        emphasis_axes = ["技術力", "運用"]
+        score_total_with_emphasis, score_must_with_emphasis, score_want_with_emphasis, matched_with_emphasis, gaps_with_emphasis, summary_with_emphasis = calculate_scores(
+            requirements, evidence_map, emphasis_axes=emphasis_axes
+        )
+        print(f"✅ F3完了（強調軸あり）: 総合スコア {score_total_with_emphasis}点")
+        print()
+
+        # スコア詳細表示（強調軸あり）
+        print("【スコア詳細（強調軸あり）】")
+        print(f"  総合スコア: {score_total_with_emphasis}点 (差分: +{score_total_with_emphasis - score_total}点)")
+        print(f"  Mustスコア: {score_must_with_emphasis}点 (差分: +{score_must_with_emphasis - score_must}点)")
+        print(f"  Wantスコア: {score_want_with_emphasis}点 (差分: +{score_want_with_emphasis - score_want}点)")
+        print(f"  マッチ数: {len(matched_with_emphasis)}件")
+        print(f"  ギャップ数: {len(gaps_with_emphasis)}件")
+        print()
+
+        # 強調軸による加点の検証
+        if score_total_with_emphasis > score_total or score_must_with_emphasis > score_must or score_want_with_emphasis > score_want:
+            print("✅ 強調軸による加点が正常に機能しています")
+            print(f"   (Must: +{score_must_with_emphasis - score_must}点, Want: +{score_want_with_emphasis - score_want}点)")
+        else:
+            print("⚠️ 強調軸による加点が反映されていません")
+            print("   これは、強調軸に該当する要件がマッチしていない場合に発生します")
+        print()
+
         print(f"【総評】")
         print(f"  {summary}")
         print()

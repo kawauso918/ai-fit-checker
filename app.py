@@ -2,354 +2,25 @@
 AI応募適合度チェッカー - メインアプリケーション
 Streamlitを使用した1ページ完結型Webアプリケーション
 """
-import os
-import re
 import streamlit as st
 import time
 from datetime import datetime
-from dotenv import load_dotenv
 
 from f1_extract_requirements import extract_requirements
 from f2_extract_evidence import extract_evidence
 from f3_score import calculate_scores
 from f4_generate_improvements import generate_improvements
-
-# 環境変数読み込み
-load_dotenv()
-
-
-def extract_important_sections(text: str, text_type: str) -> str:
-    """
-    テキストから重要なセクションのみを抽出（自動短縮）
-
-    Args:
-        text: 元のテキスト
-        text_type: "job" or "resume"
-
-    Returns:
-        str: 短縮されたテキスト
-    """
-    lines = text.split('\n')
-    important_lines = []
-    include_section = False
-
-    if text_type == "job":
-        # 求人票の重要セクション
-        important_keywords = [
-            '必須', 'required', '応募資格', '求める',
-            '歓迎', 'preferred', '尚可', '望ましい',
-            '業務内容', '職務内容', '仕事内容', '業務概要',
-            'スキル', 'skill', '経験', 'experience'
-        ]
-    else:  # resume
-        # 職務経歴書の重要セクション
-        important_keywords = [
-            '職務経歴', '経歴', '業務経験', '担当業務',
-            'スキル', 'skill', '技術', 'technology',
-            '実績', '成果', 'achievement', 'プロジェクト',
-            '資格', 'certification', '言語', 'language'
-        ]
-
-    for line in lines:
-        line_lower = line.lower()
-
-        # セクションヘッダーの検出（■、●、【】、## などで始まる行）
-        is_header = bool(re.match(r'^[■●◆▲【\#\*]+', line.strip()))
-
-        # 重要キーワードを含むか
-        contains_keyword = any(kw in line_lower for kw in important_keywords)
-
-        if is_header:
-            # 新しいセクション開始
-            include_section = contains_keyword
-            if include_section:
-                important_lines.append(line)
-        elif include_section:
-            # 現在のセクションが重要な場合は行を含める
-            important_lines.append(line)
-        elif contains_keyword:
-            # セクション外でも重要キーワードを含む行は含める
-            important_lines.append(line)
-
-    # 抽出した行を結合
-    extracted = '\n'.join(important_lines)
-
-    # 空の場合は元のテキストの先頭部分を返す
-    if not extracted.strip():
-        return text[:10000]
-
-    return extracted
-
-
-# Streamlitメニュー項目の日本語翻訳マッピング
-STREAMLIT_MENU_TRANSLATIONS = {
-    'Rerun': '再実行',
-    'Settings': '設定',
-    'Print': '印刷',
-    'Record a screencast': 'スクリーンキャストを録画',
-    'Developer options': '開発者オプション',
-    'Clear cache': 'キャッシュをクリア'
-}
-
-
-def inject_menu_translations():
-    """Streamlitメニュー項目を日本語化するJavaScriptを注入"""
-    import json
-    
-    # Pythonの翻訳マッピングをJSONに変換
-    translations_json = json.dumps(STREAMLIT_MENU_TRANSLATIONS, ensure_ascii=False)
-    
-    return f"""
-    <style>
-    /* Deployボタンを非表示 */
-    button[kind="header"][class*="deploy"],
-    button[kind="header"][class*="Deploy"],
-    a[href*="deploy.streamlit"],
-    [data-testid*="stToolbarDeployButton"],
-    [data-testid*="Deploy"],
-    button[title*="Deploy"],
-    button[aria-label*="Deploy"] {{
-        display: none !important;
-        visibility: hidden !important;
-    }}
-    </style>
-    <script>
-    (function() {{
-        'use strict';
-        
-        // Pythonから渡された翻訳マッピング
-        const translations = {translations_json};
-        
-        // すべてのテキストノードを再帰的に検索して置き換え
-        function replaceTextInElement(element) {{
-            if (!element) return;
-            
-            // すべてのテキストノードを検索
-            const walker = document.createTreeWalker(
-                element,
-                NodeFilter.SHOW_TEXT,
-                {{
-                    acceptNode: function(node) {{
-                        // 親要素がscriptやstyleタグの場合はスキップ
-                        let parent = node.parentElement;
-                        while (parent) {{
-                            if (parent.tagName === 'SCRIPT' || parent.tagName === 'STYLE') {{
-                                return NodeFilter.FILTER_REJECT;
-                            }}
-                            parent = parent.parentElement;
-                        }}
-                        return NodeFilter.FILTER_ACCEPT;
-                    }}
-                }},
-                false
-            );
-            
-            const textNodes = [];
-            let node;
-            while (node = walker.nextNode()) {{
-                textNodes.push(node);
-            }}
-            
-            // テキストノードを置き換え
-            textNodes.forEach(textNode => {{
-                const originalText = textNode.textContent;
-                const trimmedText = originalText.trim();
-                
-                // 完全一致するテキストを置き換え
-                if (translations[trimmedText]) {{
-                    textNode.textContent = originalText.replace(trimmedText, translations[trimmedText]);
-                }}
-            }});
-            
-            // 要素内の直接のテキストも確認（子要素がない場合）
-            const allElements = element.querySelectorAll('*');
-            allElements.forEach(el => {{
-                // 子要素がない、または子要素がSVGのみの場合
-                const hasOnlySvg = el.children.length === 1 && el.querySelector('svg');
-                if (el.children.length === 0 || hasOnlySvg) {{
-                    const text = el.textContent.trim();
-                    if (translations[text]) {{
-                        // SVGを保持
-                        const svg = el.querySelector('svg');
-                        if (svg) {{
-                            const svgClone = svg.cloneNode(true);
-                            el.innerHTML = '';
-                            el.appendChild(svgClone);
-                            el.appendChild(document.createTextNode(' ' + translations[text]));
-                        }} else {{
-                            el.textContent = translations[text];
-                        }}
-                    }}
-                }}
-            }});
-        }}
-        
-        // メニュー項目を日本語化する関数
-        function translateMenuItems() {{
-            // メニューコンテナを検索（複数のパターンに対応）
-            const menuContainers = [
-                '[role="menu"]',
-                '[data-baseweb="popover"]',
-                '[data-baseweb="menu"]',
-                'ul[role="menu"]',
-                '[data-testid="stHeader"] [role="menu"]'
-            ];
-            
-            menuContainers.forEach(selector => {{
-                try {{
-                    const containers = document.querySelectorAll(selector);
-                    containers.forEach(container => {{
-                        replaceTextInElement(container);
-                    }});
-                }} catch (e) {{
-                    // セレクタが無効な場合は無視
-                }}
-            }});
-            
-            // メニュー項目を直接検索
-            const menuItemSelectors = [
-                '[role="menuitem"]',
-                '[data-baseweb="menu-item"]',
-                'li[role="menuitem"]'
-            ];
-            
-            menuItemSelectors.forEach(selector => {{
-                try {{
-                    const items = document.querySelectorAll(selector);
-                    items.forEach(item => {{
-                        replaceTextInElement(item);
-                    }});
-                }} catch (e) {{
-                    // セレクタが無効な場合は無視
-                }}
-            }});
-            
-            // ヘッダー内のすべての要素も確認
-            const header = document.querySelector('[data-testid="stHeader"]');
-            if (header) {{
-                replaceTextInElement(header);
-            }}
-        }}
-        
-        // Deployボタンを非表示
-        function hideDeployButton() {{
-            const allElements = document.querySelectorAll('*');
-            allElements.forEach(el => {{
-                const text = el.textContent.trim();
-                if (text === 'Deploy') {{
-                    if (el.tagName === 'BUTTON' || 
-                        el.getAttribute('role') === 'button' ||
-                        el.closest('button')) {{
-                        el.style.display = 'none';
-                        el.style.visibility = 'hidden';
-                    }}
-                }}
-            }});
-        }}
-        
-        // 実行関数
-        function executeTranslation() {{
-            translateMenuItems();
-            hideDeployButton();
-        }}
-        
-        // 初期実行
-        if (document.readyState === 'loading') {{
-            document.addEventListener('DOMContentLoaded', function() {{
-                executeTranslation();
-                // 少し遅延して再実行（DOMが完全に構築されるまで待つ）
-                setTimeout(executeTranslation, 100);
-                setTimeout(executeTranslation, 500);
-            }});
-        }} else {{
-            executeTranslation();
-            setTimeout(executeTranslation, 100);
-            setTimeout(executeTranslation, 500);
-        }}
-        
-        // MutationObserverで監視（より積極的に）
-        const observer = new MutationObserver(function(mutations) {{
-            let shouldTranslate = false;
-            mutations.forEach(mutation => {{
-                if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {{
-                    mutation.addedNodes.forEach(node => {{
-                        if (node.nodeType === Node.ELEMENT_NODE) {{
-                            const el = node;
-                            if (el.getAttribute('role') === 'menu' ||
-                                el.getAttribute('role') === 'menuitem' ||
-                                el.querySelector('[role="menu"]') ||
-                                el.querySelector('[role="menuitem"]')) {{
-                                shouldTranslate = true;
-                            }}
-                        }}
-                    }});
-                }}
-            }});
-            if (shouldTranslate) {{
-                setTimeout(executeTranslation, 10);
-                setTimeout(executeTranslation, 100);
-            }}
-        }});
-        observer.observe(document.body, {{
-            childList: true,
-            subtree: true,
-            characterData: true
-        }});
-        
-        // クリックイベントで実行（メニューが開いた時）
-        document.addEventListener('click', function(e) {{
-            // メニューボタンがクリックされた可能性がある
-            const target = e.target;
-            if (target.closest('[data-testid="stHeader"]') || 
-                target.closest('button[kind="header"]')) {{
-                setTimeout(executeTranslation, 10);
-                setTimeout(executeTranslation, 50);
-                setTimeout(executeTranslation, 150);
-                setTimeout(executeTranslation, 300);
-            }}
-        }}, true);
-        
-        // フォーカスイベントでも実行（メニューが開く可能性がある）
-        document.addEventListener('focusin', function(e) {{
-            if (e.target.closest('[data-testid="stHeader"]')) {{
-                setTimeout(executeTranslation, 50);
-            }}
-        }}, true);
-        
-        // 定期的に実行（念のため・パフォーマンスを考慮して間隔を延長）
-        setInterval(executeTranslation, 2000);
-    }})();
-    </script>
-    """
+from models import RequirementType, ConfidenceLevel
+from utils import verify_quote_in_text
 
 
 def main():
-    # 環境変数のチェック（Streamlit CloudでSecrets入れ忘れを検知）
-    openai_key = os.getenv("OPENAI_API_KEY")
-    anthropic_key = os.getenv("ANTHROPIC_API_KEY")
-    
-    if not openai_key and not anthropic_key:
-        st.error("⚠️ **APIキーが設定されていません**\n\n"
-                "`OPENAI_API_KEY` または `ANTHROPIC_API_KEY` のいずれかをStreamlit Secretsに追加してください。\n\n"
-                "設定方法：\n"
-                "1. Streamlit Cloudのダッシュボードで「Secrets」を開く\n"
-                "2. 以下の形式で追加：\n"
-                "```\n"
-                "OPENAI_API_KEY=your_api_key_here\n"
-                "# または\n"
-                "ANTHROPIC_API_KEY=your_api_key_here\n"
-                "```")
-        st.stop()
-    
     # ページ設定
     st.set_page_config(
         page_title="AI応募適合度チェッカー",
         page_icon="📊",
         layout="wide"
     )
-
-    # StreamlitのUIボタンを日本語化（Pythonで翻訳マッピングを管理）
-    st.markdown(inject_menu_translations(), unsafe_allow_html=True)
 
     # タイトル
     st.title("📊 AI応募適合度チェッカー")
@@ -463,14 +134,6 @@ def main():
                 key="strict_mode"
             )
 
-        st.markdown("**入力テキスト設定**")
-        auto_truncate = st.checkbox(
-            "自動短縮を有効化（20,000文字以上の場合、重要部分のみ抽出）",
-            value=True,
-            key="auto_truncate",
-            help="入力が長い場合、必須スキル・歓迎スキル・業務内容などの重要セクションのみを自動抽出します"
-        )
-
     st.divider()
 
     # ==================== 実行ボタン ====================
@@ -490,72 +153,6 @@ def main():
             st.error("❌ 求人票と職務経歴書の両方を入力してください。")
             return
 
-        # 選択されたプロバイダーのAPIキーチェック
-        if llm_provider == "openai" and not openai_key:
-            st.error("❌ **OPENAI_API_KEYが設定されていません**\n\n"
-                    "OpenAIプロバイダーを使用するには、環境変数またはStreamlit Secretsに "
-                    "`OPENAI_API_KEY` を設定してください。")
-            st.stop()
-        elif llm_provider == "anthropic" and not anthropic_key:
-            st.error("❌ **ANTHROPIC_API_KEYが設定されていません**\n\n"
-                    "Anthropicプロバイダーを使用するには、環境変数またはStreamlit Secretsに "
-                    "`ANTHROPIC_API_KEY` を設定してください。")
-            st.stop()
-
-        # 文字数チェックと自動短縮
-        job_length = len(job_text)
-        resume_length = len(resume_text)
-        truncated_info = []
-
-        # 求人票の処理
-        if job_length > 50000:
-            if auto_truncate:
-                # 自動短縮を試みる
-                job_text = extract_important_sections(job_text, "job")
-                new_length = len(job_text)
-                if new_length > 50000:
-                    st.error(f"❌ 求人票のテキストが長すぎます（{job_length:,}文字 → 短縮後 {new_length:,}文字）\n\n"
-                            "自動短縮後も50,000文字を超えています。手動で短縮してください。")
-                    return
-                else:
-                    truncated_info.append(f"✂️ 求人票を自動短縮: {job_length:,}文字 → {new_length:,}文字")
-            else:
-                st.error(f"❌ 求人票のテキストが長すぎます（{job_length:,}文字）\n\n"
-                        "50,000文字以下に収めるか、詳細設定で「自動短縮」を有効にしてください。")
-                return
-        elif job_length > 20000 and auto_truncate:
-            # 20,000文字以上の場合も自動短縮
-            job_text = extract_important_sections(job_text, "job")
-            new_length = len(job_text)
-            truncated_info.append(f"✂️ 求人票を自動短縮: {job_length:,}文字 → {new_length:,}文字")
-
-        # 職務経歴書の処理
-        if resume_length > 50000:
-            if auto_truncate:
-                # 自動短縮を試みる
-                resume_text = extract_important_sections(resume_text, "resume")
-                new_length = len(resume_text)
-                if new_length > 50000:
-                    st.error(f"❌ 職務経歴書のテキストが長すぎます（{resume_length:,}文字 → 短縮後 {new_length:,}文字）\n\n"
-                            "自動短縮後も50,000文字を超えています。手動で短縮してください。")
-                    return
-                else:
-                    truncated_info.append(f"✂️ 職務経歴書を自動短縮: {resume_length:,}文字 → {new_length:,}文字")
-            else:
-                st.error(f"❌ 職務経歴書のテキストが長すぎます（{resume_length:,}文字）\n\n"
-                        "50,000文字以下に収めるか、詳細設定で「自動短縮」を有効にしてください。")
-                return
-        elif resume_length > 20000 and auto_truncate:
-            # 20,000文字以上の場合も自動短縮
-            resume_text = extract_important_sections(resume_text, "resume")
-            new_length = len(resume_text)
-            truncated_info.append(f"✂️ 職務経歴書を自動短縮: {resume_length:,}文字 → {new_length:,}文字")
-
-        # 短縮情報を表示
-        if truncated_info:
-            st.info("📝 **入力テキストの自動短縮**\n\n" + "\n".join(truncated_info) +
-                   "\n\n重要セクション（必須スキル、歓迎スキル、業務内容など）のみを抽出しました。")
-
         # オプション辞書を作成
         options = {
             "llm_provider": llm_provider,
@@ -564,7 +161,6 @@ def main():
             "max_must": max_must,
             "max_want": max_want,
             "strict_mode": strict_mode,
-            "max_gaps": 5,  # F4の改善案生成で処理するギャップの最大件数（実行時間短縮のため）
         }
 
         # 実行時間計測開始
@@ -580,21 +176,6 @@ def main():
             with st.spinner("⏳ F2: 職務経歴から根拠を抽出中..."):
                 evidence_map = extract_evidence(resume_text, requirements, options)
                 st.success(f"✅ F2完了: {len(evidence_map)}件の根拠を分析")
-
-            # F2の引用検証結果をチェック
-            invalid_quote_evidences = [
-                (req_id, ev) for req_id, ev in evidence_map.items()
-                if "引用検証失敗" in ev.reason
-            ]
-            if invalid_quote_evidences:
-                req_id_to_desc = {r.req_id: r.description for r in requirements}
-                st.warning(
-                    f"⚠️ **引用検証の警告**\n\n"
-                    f"{len(invalid_quote_evidences)}件の要件で、職務経歴書からの引用が原文に存在しませんでした。\n"
-                    f"LLMが誤って生成した可能性があります。以下の要件の根拠は慎重に確認してください：\n\n"
-                    + "\n".join([f"- [{req_id}] {req_id_to_desc.get(req_id, 'Unknown')}"
-                                for req_id, _ in invalid_quote_evidences])
-                )
 
             # F3: スコア計算
             with st.spinner("⏳ F3: スコアを計算中..."):
@@ -627,6 +208,7 @@ def main():
                 "gaps": gaps,
                 "summary": summary,
                 "improvements": improvements,
+                "resume_text": resume_text,  # 引用検証用に保存
             }
 
             st.balloons()
@@ -676,44 +258,36 @@ def main():
                 delta=None
             )
 
-        # スコア計算の根拠説明
-        with st.expander("💡 スコアの計算方法", expanded=False):
-            st.markdown("""
-            ### 📐 スコア計算式
+        # 差分サマリ（強みTop3 + 致命的ギャップTop3）
+        st.subheader("⚡ 差分サマリ")
+        col_summary1, col_summary2 = st.columns(2)
 
-            **総合スコア** = Must スコア × **70%** + Want スコア × **30%**
+        with col_summary1:
+            # 強みTop3を抽出
+            top_strengths = _get_top_strengths(result['matched'], top_n=3)
+            if top_strengths:
+                st.markdown("**✅ 強みTop3**")
+                for i, m in enumerate(top_strengths, 1):
+                    category_label = "Must" if m.requirement.category == RequirementType.MUST else "Want"
+                    confidence_label = f"{m.evidence.confidence:.0%}"
+                    st.markdown(f"{i}. **{m.requirement.description}** ({category_label}, 一致度: {confidence_label})")
+            else:
+                st.markdown("**✅ 強みTop3**")
+                st.markdown("*強みが見つかりませんでした*")
 
-            - **総合スコア**: {total}点 = {must}点 × 0.7 + {want}点 × 0.3
+        with col_summary2:
+            # 致命的ギャップTop3を抽出
+            top_gaps = _get_top_critical_gaps(result['gaps'], top_n=3)
+            if top_gaps:
+                st.markdown("**⚠️ 致命的ギャップTop3**")
+                for i, g in enumerate(top_gaps, 1):
+                    category_label = "Must" if g.requirement.category == RequirementType.MUST else "Want"
+                    st.markdown(f"{i}. **{g.requirement.description}** ({category_label})")
+            else:
+                st.markdown("**⚠️ 致命的ギャップTop3**")
+                st.markdown("*致命的なギャップはありません*")
 
-            ### 📊 各スコアの意味
-
-            - **Mustスコア（必須要件）**: 求人票の必須要件に対する適合度
-              - 100点満点で、要件の重要度（weight）に応じて加重平均で計算
-              - 各要件のconfidenceを点数化: HIGH=1.0点、PARTIAL=0.5点、NONE=0.0点
-
-            - **Wantスコア（歓迎要件）**: 求人票の歓迎要件に対する適合度
-              - 100点満点で、要件の重要度（weight）に応じて加重平均で計算
-              - Must要件よりも総合スコアへの寄与度が低い（30%）
-
-            ### 🎯 重み付けの理由
-
-            - **Must要件（70%）**: 必須要件は採用可否に直結するため、高い比重
-            - **Want要件（30%）**: 歓迎要件は「あればプラス」なので、低めの比重
-
-            ### ✅ マッチ判定基準
-
-            各要件のconfidenceレベルに応じて点数化されます:
-
-            | Confidence | 点数 | 判定 | 説明 |
-            |-----------|------|------|------|
-            | ≥ 0.7 (HIGH) | 1.0点 | ✅ マッチ | 職務経歴書に明確な記述あり |
-            | 0.4〜0.7 (PARTIAL) | 0.5点 | ⚠️ 部分マッチ | 部分的な経験あり |
-            | < 0.4 (LOW/NONE) | 0.0点 | ❌ ギャップ | 該当する経験なし |
-            """.format(
-                total=result['score_total'],
-                must=result['score_must'],
-                want=result['score_want']
-            ))
+        st.divider()
 
         # サマリー
         st.subheader("📝 総評")
@@ -739,8 +313,16 @@ def main():
 
                     if m.evidence.resume_quotes:
                         st.markdown("**職務経歴からの引用**:")
+                        resume_text_for_verification = result.get("resume_text", "")
                         for quote in m.evidence.resume_quotes:
-                            st.markdown(f"> {quote}")
+                            # 引用が実際に存在するか検証
+                            is_valid = verify_quote_in_text(quote, resume_text_for_verification)
+                            if is_valid:
+                                st.markdown(f"> {quote}")
+                            else:
+                                # 警告表示：引用が見つからない場合
+                                st.markdown("> ⚠️ **引用要確認**")
+                                st.markdown(f"> {quote}")
 
                     st.markdown("**求人票からの引用**:")
                     st.markdown(f"> {m.requirement.job_quote}")
@@ -832,6 +414,64 @@ def main():
             st.markdown(f"**抽出要件数**: {len(result['requirements'])}件")
             st.markdown(f"**マッチ数**: {len(result['matched'])}件")
             st.markdown(f"**ギャップ数**: {len(result['gaps'])}件")
+
+
+def _get_top_strengths(matched, top_n=3):
+    """
+    強みTop3を抽出（confidence strong > partial、Must > Want を優先）
+    
+    Args:
+        matched: マッチした要件と根拠のペアリスト
+        top_n: 取得件数（デフォルト3）
+    
+    Returns:
+        List[RequirementWithEvidence]: ソート済み強みリスト（上位N件）
+    """
+    if not matched:
+        return []
+    
+    # ソートキー（降順にするため負の値を使用）：
+    # 1. confidenceが高い順（0.7以上=HIGH > 0.4-0.7=MEDIUM）
+    # 2. Must優先（MUST=0, WANT=1）
+    # 3. importance降順
+    sorted_matched = sorted(
+        matched,
+        key=lambda m: (
+            -m.evidence.confidence,  # confidence降順（負の値で大きい値が前に来る）
+            0 if m.requirement.category == RequirementType.MUST else 1,  # Must優先
+            -m.requirement.importance  # importance降順（負の値で大きい値が前に来る）
+        )
+    )
+    
+    return sorted_matched[:top_n]
+
+
+def _get_top_critical_gaps(gaps, top_n=3):
+    """
+    致命的ギャップTop3を抽出（Must優先）
+    
+    Args:
+        gaps: ギャップリスト
+        top_n: 取得件数（デフォルト3）
+    
+    Returns:
+        List[Gap]: ソート済みギャップリスト（上位N件）
+    """
+    if not gaps:
+        return []
+    
+    # ソートキー：
+    # 1. Must優先（MUST=0, WANT=1）
+    # 2. importance降順
+    sorted_gaps = sorted(
+        gaps,
+        key=lambda g: (
+            0 if g.requirement.category == RequirementType.MUST else 1,  # Must優先
+            -g.requirement.importance  # importance降順
+        )
+    )
+    
+    return sorted_gaps[:top_n]
 
 
 if __name__ == "__main__":

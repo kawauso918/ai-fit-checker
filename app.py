@@ -12,6 +12,7 @@ from f3_score import calculate_scores
 from f4_generate_improvements import generate_improvements
 from models import RequirementType, ConfidenceLevel
 from utils import verify_quote_in_text
+from pdf_export import generate_pdf
 
 
 def main():
@@ -38,17 +39,50 @@ def main():
     # ==================== 入力フォーム ====================
     st.header("📝 入力情報")
 
+    # 比較モードの切り替え
+    compare_mode = st.checkbox(
+        "🔀 比較モード（最大3つの求人票を比較）",
+        value=False,
+        key="compare_mode"
+    )
+
     # 2カラムレイアウト
     col1, col2 = st.columns(2)
 
     with col1:
         st.subheader("求人票")
-        job_text = st.text_area(
-            "求人票のテキストを貼り付けてください",
-            height=300,
-            placeholder="【求人票】\n\n■必須スキル\n・Python開発経験3年以上\n・Webアプリケーション開発の実務経験\n\n■歓迎スキル\n・AWSなどクラウド環境での開発経験",
-            key="job_text"
-        )
+        
+        if compare_mode:
+            # 比較モード：タブで複数の求人票を入力
+            job_tabs = st.tabs(["求人1", "求人2", "求人3"])
+            job_texts = []
+            
+            for i, tab in enumerate(job_tabs, 1):
+                with tab:
+                    job_text_input = st.text_area(
+                        f"求人{i}のテキストを貼り付けてください",
+                        height=250,
+                        placeholder=f"【求人票{i}】\n\n■必須スキル\n・Python開発経験3年以上\n・Webアプリケーション開発の実務経験\n\n■歓迎スキル\n・AWSなどクラウド環境での開発経験",
+                        key=f"job_text_{i}"
+                    )
+                    job_texts.append(job_text_input)
+            
+            # 空でない求人票のみを有効とする
+            job_texts = [jt for jt in job_texts if jt.strip()]
+            
+            if not job_texts:
+                job_text = None  # 1件モードとの互換性のため
+            else:
+                job_text = job_texts[0]  # デフォルトは最初の求人票
+        else:
+            # 通常モード：1つの求人票
+            job_text = st.text_area(
+                "求人票のテキストを貼り付けてください",
+                height=300,
+                placeholder="【求人票】\n\n■必須スキル\n・Python開発経験3年以上\n・Webアプリケーション開発の実務経験\n\n■歓迎スキル\n・AWSなどクラウド環境での開発経験",
+                key="job_text"
+            )
+            job_texts = [job_text] if job_text else []
 
     with col2:
         st.subheader("職務経歴書")
@@ -149,9 +183,24 @@ def main():
     # ==================== 分析実行 ====================
     if analyze_button:
         # 入力チェック
-        if not job_text or not resume_text:
-            st.error("❌ 求人票と職務経歴書の両方を入力してください。")
+        if not resume_text:
+            st.error("❌ 職務経歴書を入力してください。")
             return
+        
+        if compare_mode:
+            # 比較モード：複数の求人票をチェック
+            if not job_texts or len(job_texts) == 0:
+                st.error("❌ 比較モードでは、少なくとも1つの求人票を入力してください。")
+                return
+            if len(job_texts) > 3:
+                st.error("❌ 比較モードでは、最大3つの求人票まで入力できます。")
+                return
+        else:
+            # 通常モード：1つの求人票をチェック
+            if not job_text:
+                st.error("❌ 求人票を入力してください。")
+                return
+            job_texts = [job_text]
 
         # 強調軸をリストに変換（カンマ区切り対応）
         emphasis_axes_list = []
@@ -173,51 +222,111 @@ def main():
         start_time = time.time()
 
         try:
-            # F1: 求人要件抽出
-            with st.spinner("⏳ F1: 求人要件を抽出中..."):
-                requirements = extract_requirements(job_text, options)
-                st.success(f"✅ F1完了: {len(requirements)}件の要件を抽出")
+            if compare_mode:
+                # 比較モード：複数の求人票に対して順番に実行
+                all_results = []
+                
+                for idx, job_text_item in enumerate(job_texts, 1):
+                    st.markdown(f"### 📋 求人{idx}の分析中...")
+                    
+                    # F1: 求人要件抽出
+                    with st.spinner(f"⏳ 求人{idx} - F1: 求人要件を抽出中..."):
+                        requirements = extract_requirements(job_text_item, options)
+                    
+                    # F2: 根拠抽出
+                    with st.spinner(f"⏳ 求人{idx} - F2: 職務経歴から根拠を抽出中..."):
+                        evidence_map = extract_evidence(resume_text, requirements, options)
+                    
+                    # F3: スコア計算
+                    with st.spinner(f"⏳ 求人{idx} - F3: スコアを計算中..."):
+                        score_total, score_must, score_want, matched, gaps, summary = calculate_scores(
+                            requirements, evidence_map, emphasis_axes=emphasis_axes_list
+                        )
+                    
+                    # F4: 改善案生成
+                    with st.spinner(f"⏳ 求人{idx} - F4: 改善案を生成中..."):
+                        improvements = generate_improvements(
+                            job_text_item, resume_text, requirements, matched, gaps, options
+                        )
+                    
+                    # 結果を保存
+                    all_results.append({
+                        "job_index": idx,
+                        "job_text": job_text_item,
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "requirements": requirements,
+                        "evidence_map": evidence_map,
+                        "score_total": score_total,
+                        "score_must": score_must,
+                        "score_want": score_want,
+                        "matched": matched,
+                        "gaps": gaps,
+                        "summary": summary,
+                        "improvements": improvements,
+                    })
+                    
+                    st.success(f"✅ 求人{idx}の分析完了: 総合スコア {score_total}点")
+                
+                # 実行時間計測終了
+                end_time = time.time()
+                execution_time = end_time - start_time
+                
+                # 結果をsession_stateに保存（比較モード用）
+                st.session_state.compare_results = {
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "execution_time": execution_time,
+                    "resume_text": resume_text,
+                    "results": all_results,
+                }
+                
+                st.balloons()
+            else:
+                # 通常モード：1つの求人票に対して実行
+                # F1: 求人要件抽出
+                with st.spinner("⏳ F1: 求人要件を抽出中..."):
+                    requirements = extract_requirements(job_text, options)
+                    st.success(f"✅ F1完了: {len(requirements)}件の要件を抽出")
 
-            # F2: 根拠抽出
-            with st.spinner("⏳ F2: 職務経歴から根拠を抽出中..."):
-                evidence_map = extract_evidence(resume_text, requirements, options)
-                st.success(f"✅ F2完了: {len(evidence_map)}件の根拠を分析")
+                # F2: 根拠抽出
+                with st.spinner("⏳ F2: 職務経歴から根拠を抽出中..."):
+                    evidence_map = extract_evidence(resume_text, requirements, options)
+                    st.success(f"✅ F2完了: {len(evidence_map)}件の根拠を分析")
 
-            # F3: スコア計算
-            with st.spinner("⏳ F3: スコアを計算中..."):
-                score_total, score_must, score_want, matched, gaps, summary = calculate_scores(
-                    requirements, evidence_map, emphasis_axes=emphasis_axes_list
-                )
-                st.success(f"✅ F3完了: 総合スコア {score_total}点")
+                # F3: スコア計算
+                with st.spinner("⏳ F3: スコアを計算中..."):
+                    score_total, score_must, score_want, matched, gaps, summary = calculate_scores(
+                        requirements, evidence_map, emphasis_axes=emphasis_axes_list
+                    )
+                    st.success(f"✅ F3完了: 総合スコア {score_total}点")
 
-            # F4: 改善案生成
-            with st.spinner("⏳ F4: 改善案を生成中..."):
-                improvements = generate_improvements(
-                    job_text, resume_text, requirements, matched, gaps, options
-                )
-                st.success(f"✅ F4完了: {len(improvements.action_items)}件の行動計画を生成")
+                # F4: 改善案生成
+                with st.spinner("⏳ F4: 改善案を生成中..."):
+                    improvements = generate_improvements(
+                        job_text, resume_text, requirements, matched, gaps, options
+                    )
+                    st.success(f"✅ F4完了: {len(improvements.action_items)}件の行動計画を生成")
 
-            # 実行時間計測終了
-            end_time = time.time()
-            execution_time = end_time - start_time
+                # 実行時間計測終了
+                end_time = time.time()
+                execution_time = end_time - start_time
 
-            # 結果をsession_stateに保存
-            st.session_state.result = {
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "execution_time": execution_time,
-                "requirements": requirements,
-                "evidence_map": evidence_map,
-                "score_total": score_total,
-                "score_must": score_must,
-                "score_want": score_want,
-                "matched": matched,
-                "gaps": gaps,
-                "summary": summary,
-                "improvements": improvements,
-                "resume_text": resume_text,  # 引用検証用に保存
-            }
+                # 結果をsession_stateに保存
+                st.session_state.result = {
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "execution_time": execution_time,
+                    "requirements": requirements,
+                    "evidence_map": evidence_map,
+                    "score_total": score_total,
+                    "score_must": score_must,
+                    "score_want": score_want,
+                    "matched": matched,
+                    "gaps": gaps,
+                    "summary": summary,
+                    "improvements": improvements,
+                    "resume_text": resume_text,  # 引用検証用に保存
+                }
 
-            st.balloons()
+                st.balloons()
 
         except Exception as e:
             st.error(f"❌ エラーが発生しました: {e}")
@@ -227,153 +336,232 @@ def main():
             return
 
     # ==================== 結果表示 ====================
+    # 比較モードの結果表示
+    if "compare_results" in st.session_state:
+        compare_results = st.session_state.compare_results
+        
+        st.divider()
+        st.header("📊 比較結果")
+        
+        # スコアランキング表示
+        st.subheader("🏆 スコアランキング")
+        results = compare_results["results"]
+        
+        # スコア順にソート
+        sorted_results = sorted(results, key=lambda x: x["score_total"], reverse=True)
+        
+        # ランキング表示
+        col_rank1, col_rank2, col_rank3 = st.columns(3)
+        rank_cols = [col_rank1, col_rank2, col_rank3]
+        
+        for i, result_item in enumerate(sorted_results[:3], 1):
+            with rank_cols[i-1]:
+                st.metric(
+                    label=f"🏅 {i}位: 求人{result_item['job_index']}",
+                    value=f"{result_item['score_total']}点",
+                    delta=f"Must: {result_item['score_must']} / Want: {result_item['score_want']}"
+                )
+        
+        st.divider()
+        
+        # 各求人の詳細（折りたたみ表示）
+        st.subheader("📋 各求人の詳細")
+        
+        for result_item in sorted_results:
+            with st.expander(
+                f"求人{result_item['job_index']}: 総合スコア {result_item['score_total']}点 "
+                f"(Must: {result_item['score_must']}点 / Want: {result_item['score_want']}点)",
+                expanded=False
+            ):
+                # 通常モードと同じ表示ロジックを使用
+                _render_single_result(result_item, compare_results["resume_text"])
+        
+        st.divider()
+    
+    # 通常モードの結果表示
     if "result" in st.session_state:
         result = st.session_state.result
 
         st.divider()
         st.header("📊 分析結果")
 
-        # メトリクス表示
-        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-
-        with col_m1:
-            st.metric(
-                label="総合スコア",
-                value=f"{result['score_total']}点",
-                delta=None
+        # PDFダウンロードボタン
+        try:
+            pdf_bytes = generate_pdf(result)
+            st.download_button(
+                label="📥 PDFレポートをダウンロード",
+                data=pdf_bytes,
+                file_name=f"ai-fit-checker-report-{result.get('timestamp', 'report').replace(' ', '_').replace(':', '-')}.pdf",
+                mime="application/pdf",
+                use_container_width=False
             )
-
-        with col_m2:
-            st.metric(
-                label="Mustスコア",
-                value=f"{result['score_must']}点",
-                delta=None
-            )
-
-        with col_m3:
-            st.metric(
-                label="Wantスコア",
-                value=f"{result['score_want']}点",
-                delta=None
-            )
-
-        with col_m4:
-            st.metric(
-                label="マッチ数/ギャップ数",
-                value=f"{len(result['matched'])}/{len(result['gaps'])}",
-                delta=None
-            )
-
-        # 差分サマリ（強みTop3 + 致命的ギャップTop3）
-        st.subheader("⚡ 差分サマリ")
-        col_summary1, col_summary2 = st.columns(2)
-
-        with col_summary1:
-            # 強みTop3を抽出
-            top_strengths = _get_top_strengths(result['matched'], top_n=3)
-            if top_strengths:
-                st.markdown("**✅ 強みTop3**")
-                for i, m in enumerate(top_strengths, 1):
-                    category_label = "Must" if m.requirement.category == RequirementType.MUST else "Want"
-                    confidence_label = f"{m.evidence.confidence:.0%}"
-                    st.markdown(f"{i}. **{m.requirement.description}** ({category_label}, 一致度: {confidence_label})")
-            else:
-                st.markdown("**✅ 強みTop3**")
-                st.markdown("*強みが見つかりませんでした*")
-
-        with col_summary2:
-            # 致命的ギャップTop3を抽出
-            top_gaps = _get_top_critical_gaps(result['gaps'], top_n=3)
-            if top_gaps:
-                st.markdown("**⚠️ 致命的ギャップTop3**")
-                for i, g in enumerate(top_gaps, 1):
-                    category_label = "Must" if g.requirement.category == RequirementType.MUST else "Want"
-                    st.markdown(f"{i}. **{g.requirement.description}** ({category_label})")
-            else:
-                st.markdown("**⚠️ 致命的ギャップTop3**")
-                st.markdown("*致命的なギャップはありません*")
+        except Exception as e:
+            st.warning(f"⚠️ PDF生成に失敗しました: {e}")
 
         st.divider()
 
-        # サマリー
-        st.subheader("📝 総評")
-        st.info(result['summary'])
+        # 通常モードの結果表示（関数化したロジックを使用）
+        _render_single_result(result, result.get("resume_text", ""))
 
-        st.divider()
+        # 実行ログ
+        with st.expander("📋 実行ログ"):
+            st.markdown(f"**実行日時**: {result['timestamp']}")
+            st.markdown(f"**実行時間**: {result['execution_time']:.2f}秒")
+            st.markdown(f"**抽出要件数**: {len(result['requirements'])}件")
+            st.markdown(f"**マッチ数**: {len(result['matched'])}件")
+            st.markdown(f"**ギャップ数**: {len(result['gaps'])}件")
 
-        # マッチした要件
-        st.subheader(f"✅ マッチした要件（{len(result['matched'])}件）")
 
-        if result['matched']:
-            for i, m in enumerate(result['matched'], 1):
-                with st.expander(
-                    f"**[{m.requirement.req_id}]** {m.requirement.description} "
-                    f"（一致度: {m.evidence.confidence:.0%}）"
-                ):
-                    st.markdown(f"**カテゴリ**: {m.requirement.category.value}")
-                    st.markdown(f"**重要度**: {'⭐' * m.requirement.importance}")
-                    st.markdown(f"**一致度**: {m.evidence.confidence:.2f} ({m.evidence.confidence_level.value})")
+def _render_single_result(result_dict: dict, resume_text: str):
+    """
+    単一の分析結果を表示（通常モードと比較モードで共通使用）
+    
+    Args:
+        result_dict: 分析結果の辞書（result または compare_results["results"][i]）
+        resume_text: 職務経歴書のテキスト（引用検証用）
+    """
+    # メトリクス表示
+    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
 
-                    st.markdown("**判定理由**:")
-                    st.write(m.evidence.reason)
+    with col_m1:
+        st.metric(
+            label="総合スコア",
+            value=f"{result_dict['score_total']}点",
+            delta=None
+        )
 
-                    if m.evidence.resume_quotes:
-                        st.markdown("**職務経歴からの引用**:")
-                        resume_text_for_verification = result.get("resume_text", "")
-                        for quote in m.evidence.resume_quotes:
-                            # 引用が実際に存在するか検証
-                            is_valid = verify_quote_in_text(quote, resume_text_for_verification)
-                            if is_valid:
-                                st.markdown(f"> {quote}")
-                            else:
-                                # 警告表示：引用が見つからない場合
-                                st.markdown("> ⚠️ **引用要確認**")
-                                st.markdown(f"> {quote}")
+    with col_m2:
+        st.metric(
+            label="Mustスコア",
+            value=f"{result_dict['score_must']}点",
+            delta=None
+        )
 
-                    st.markdown("**求人票からの引用**:")
-                    st.markdown(f"> {m.requirement.job_quote}")
+    with col_m3:
+        st.metric(
+            label="Wantスコア",
+            value=f"{result_dict['score_want']}点",
+            delta=None
+        )
+
+    with col_m4:
+        st.metric(
+            label="マッチ数/ギャップ数",
+            value=f"{len(result_dict['matched'])}/{len(result_dict['gaps'])}",
+            delta=None
+        )
+
+    # 差分サマリ（強みTop3 + 致命的ギャップTop3）
+    st.subheader("⚡ 差分サマリ")
+    col_summary1, col_summary2 = st.columns(2)
+
+    with col_summary1:
+        # 強みTop3を抽出
+        top_strengths = _get_top_strengths(result_dict['matched'], top_n=3)
+        if top_strengths:
+            st.markdown("**✅ 強みTop3**")
+            for i, m in enumerate(top_strengths, 1):
+                category_label = "Must" if m.requirement.category == RequirementType.MUST else "Want"
+                confidence_label = f"{m.evidence.confidence:.0%}"
+                st.markdown(f"{i}. **{m.requirement.description}** ({category_label}, 一致度: {confidence_label})")
         else:
-            st.write("マッチした要件はありません。")
+            st.markdown("**✅ 強みTop3**")
+            st.markdown("*強みが見つかりませんでした*")
 
-        st.divider()
-
-        # ギャップのある要件
-        st.subheader(f"⚠️ ギャップのある要件（{len(result['gaps'])}件）")
-
-        if result['gaps']:
-            for i, g in enumerate(result['gaps'], 1):
-                with st.expander(
-                    f"**[{g.requirement.req_id}]** {g.requirement.description} "
-                    f"（{g.requirement.category.value}）",
-                    expanded=(i <= 3)  # 最初の3件は展開
-                ):
-                    st.markdown(f"**カテゴリ**: {g.requirement.category.value}")
-                    st.markdown(f"**重要度**: {'⭐' * g.requirement.importance}")
-
-                    st.markdown("**不足理由**:")
-                    st.warning(g.evidence.reason)
-
-                    st.markdown("**埋め方のヒント**:")
-                    st.markdown(
-                        f"- 該当する経験があれば職務経歴書に**明示的に記載**してください\n"
-                        f"- 経験がない場合は、下記の「改善案」を参考に**学習・実績作り**を検討してください"
-                    )
+    with col_summary2:
+        # 致命的ギャップTop3を抽出
+        top_gaps = _get_top_critical_gaps(result_dict['gaps'], top_n=3)
+        if top_gaps:
+            st.markdown("**⚠️ 致命的ギャップTop3**")
+            for i, g in enumerate(top_gaps, 1):
+                category_label = "Must" if g.requirement.category == RequirementType.MUST else "Want"
+                st.markdown(f"{i}. **{g.requirement.description}** ({category_label})")
         else:
-            st.write("ギャップはありません。全ての要件を満たしています！")
+            st.markdown("**⚠️ 致命的ギャップTop3**")
+            st.markdown("*致命的なギャップはありません*")
 
-        st.divider()
+    st.divider()
 
-        # 改善案
+    # サマリー
+    st.subheader("📝 総評")
+    st.info(result_dict['summary'])
+
+    st.divider()
+
+    # マッチした要件
+    st.subheader(f"✅ マッチした要件（{len(result_dict['matched'])}件）")
+
+    if result_dict['matched']:
+        for i, m in enumerate(result_dict['matched'], 1):
+            with st.expander(
+                f"**[{m.requirement.req_id}]** {m.requirement.description} "
+                f"（一致度: {m.evidence.confidence:.0%}）"
+            ):
+                st.markdown(f"**カテゴリ**: {m.requirement.category.value}")
+                st.markdown(f"**重要度**: {'⭐' * m.requirement.importance}")
+                st.markdown(f"**一致度**: {m.evidence.confidence:.2f} ({m.evidence.confidence_level.value})")
+
+                st.markdown("**判定理由**:")
+                st.write(m.evidence.reason)
+
+                if m.evidence.resume_quotes:
+                    st.markdown("**職務経歴からの引用**:")
+                    for quote in m.evidence.resume_quotes:
+                        # 引用が実際に存在するか検証
+                        is_valid = verify_quote_in_text(quote, resume_text)
+                        if is_valid:
+                            st.markdown(f"> {quote}")
+                        else:
+                            # 警告表示：引用が見つからない場合
+                            st.markdown("> ⚠️ **引用要確認**")
+                            st.markdown(f"> {quote}")
+
+                st.markdown("**求人票からの引用**:")
+                st.markdown(f"> {m.requirement.job_quote}")
+    else:
+        st.write("マッチした要件はありません。")
+
+    st.divider()
+
+    # ギャップのある要件
+    st.subheader(f"⚠️ ギャップのある要件（{len(result_dict['gaps'])}件）")
+
+    if result_dict['gaps']:
+        for i, g in enumerate(result_dict['gaps'], 1):
+            with st.expander(
+                f"**[{g.requirement.req_id}]** {g.requirement.description} "
+                f"（{g.requirement.category.value}）",
+                expanded=(i <= 3)  # 最初の3件は展開
+            ):
+                st.markdown(f"**カテゴリ**: {g.requirement.category.value}")
+                st.markdown(f"**重要度**: {'⭐' * g.requirement.importance}")
+
+                st.markdown("**不足理由**:")
+                st.warning(g.evidence.reason)
+
+                st.markdown("**埋め方のヒント**:")
+                st.markdown(
+                    f"- 該当する経験があれば職務経歴書に**明示的に記載**してください\n"
+                    f"- 経験がない場合は、下記の「改善案」を参考に**学習・実績作り**を検討してください"
+                )
+    else:
+        st.write("ギャップはありません。全ての要件を満たしています！")
+
+    st.divider()
+
+    # 改善案
+    improvements = result_dict.get('improvements')
+    if improvements:
         st.subheader("💡 改善案")
 
         st.markdown(f"**【全体戦略】**")
-        st.success(result['improvements'].overall_strategy)
+        st.success(improvements.overall_strategy)
 
         # 職務経歴書の編集・追記案
-        if result['improvements'].resume_edits:
-            st.markdown(f"### ✏️ 職務経歴書の編集・追記案（{len(result['improvements'].resume_edits)}件）")
+        if improvements.resume_edits:
+            st.markdown(f"### ✏️ 職務経歴書の編集・追記案（{len(improvements.resume_edits)}件）")
 
-            for i, edit in enumerate(result['improvements'].resume_edits, 1):
+            for i, edit in enumerate(improvements.resume_edits, 1):
                 st.markdown(f"**{i}. 対象要件**: {edit.target_gap} ({edit.edit_type})")
                 
                 st.markdown("**追記テンプレート**:")
@@ -384,13 +572,13 @@ def main():
                 st.markdown("---")
 
         # 行動計画
-        if result['improvements'].action_items:
-            st.markdown(f"### 🎯 行動計画（{len(result['improvements'].action_items)}件）")
+        if improvements.action_items:
+            st.markdown(f"### 🎯 行動計画（{len(improvements.action_items)}件）")
 
             # 優先度別にグループ化
-            priority_a = [a for a in result['improvements'].action_items if a.priority == "A"]
-            priority_b = [a for a in result['improvements'].action_items if a.priority == "B"]
-            priority_c = [a for a in result['improvements'].action_items if a.priority == "C"]
+            priority_a = [a for a in improvements.action_items if a.priority == "A"]
+            priority_b = [a for a in improvements.action_items if a.priority == "B"]
+            priority_c = [a for a in improvements.action_items if a.priority == "C"]
 
             if priority_a:
                 st.markdown("#### 🔴 優先度A（最優先・短期）")
@@ -412,16 +600,6 @@ def main():
                     st.markdown(f"- **{a.action}**")
                     st.markdown(f"  - 根拠: {a.rationale}")
                     st.markdown(f"  - 期待効果: {a.estimated_impact}")
-
-        st.divider()
-
-        # 実行ログ
-        with st.expander("📋 実行ログ"):
-            st.markdown(f"**実行日時**: {result['timestamp']}")
-            st.markdown(f"**実行時間**: {result['execution_time']:.2f}秒")
-            st.markdown(f"**抽出要件数**: {len(result['requirements'])}件")
-            st.markdown(f"**マッチ数**: {len(result['matched'])}件")
-            st.markdown(f"**ギャップ数**: {len(result['gaps'])}件")
 
 
 def _get_top_strengths(matched, top_n=3):

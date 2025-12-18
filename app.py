@@ -11,6 +11,7 @@ from f2_extract_evidence import extract_evidence
 from f3_score import calculate_scores
 from f4_generate_improvements import generate_improvements
 from f5_generate_interview_qa import generate_interview_qa
+from f6_quality_evaluation import evaluate_quality
 from models import RequirementType, ConfidenceLevel
 from utils import verify_quote_in_text
 from pdf_export import generate_pdf
@@ -256,6 +257,17 @@ def main():
                             job_text_item, resume_text, matched, gaps, summary, options
                         )
                     
+                    # F6: 品質評価（失敗時はスキップ）
+                    quality_evaluation = None
+                    try:
+                        with st.spinner(f"⏳ 求人{idx} - F6: 品質評価を実行中..."):
+                            quality_evaluation = evaluate_quality(
+                                job_text_item, resume_text, matched, gaps, improvements, interview_qas, options
+                            )
+                    except Exception as e:
+                        # エラー時はスキップ（警告は出さない、比較モードでは簡潔に）
+                        pass
+                    
                     # 結果を保存
                     all_results.append({
                         "job_index": idx,
@@ -271,6 +283,7 @@ def main():
                         "summary": summary,
                         "improvements": improvements,
                         "interview_qas": interview_qas,
+                        "quality_evaluation": quality_evaluation,  # Noneの可能性あり
                     })
                     
                     st.success(f"✅ 求人{idx}の分析完了: 総合スコア {score_total}点")
@@ -321,6 +334,17 @@ def main():
                     )
                     st.success(f"✅ F5完了: {len(interview_qas.qa_list)}件のQ&Aを生成")
 
+                # F6: 品質評価（失敗時はスキップ）
+                quality_evaluation = None
+                try:
+                    with st.spinner("⏳ F6: 品質評価を実行中..."):
+                        quality_evaluation = evaluate_quality(
+                            job_text, resume_text, matched, gaps, improvements, interview_qas, options
+                        )
+                        st.success(f"✅ F6完了: 総合品質スコア {quality_evaluation.overall_score:.1f}点")
+                except Exception as e:
+                    st.warning(f"⚠️ F6（品質評価）をスキップしました: {e}")
+
                 # 実行時間計測終了
                 end_time = time.time()
                 execution_time = end_time - start_time
@@ -339,6 +363,7 @@ def main():
                     "summary": summary,
                     "improvements": improvements,
                     "interview_qas": interview_qas,
+                    "quality_evaluation": quality_evaluation,  # Noneの可能性あり
                     "resume_text": resume_text,  # 引用検証用に保存
                 }
 
@@ -633,6 +658,38 @@ def _render_single_result(result_dict: dict, resume_text: str):
                 st.markdown("**回答の骨子:**")
                 for outline in qa.answer_outline:
                     st.markdown(f"- {outline}")
+
+    st.divider()
+
+    # 品質評価
+    quality_evaluation = result_dict.get('quality_evaluation')
+    if quality_evaluation:
+        st.subheader("📊 品質評価")
+        
+        # 総合スコア
+        st.markdown(f"**総合品質スコア: {quality_evaluation.overall_score:.1f}点**")
+        
+        # 観点別スコア
+        st.markdown("### 観点別スコア")
+        col_q1, col_q2 = st.columns(2)
+        
+        for i, criterion_score in enumerate(quality_evaluation.criterion_scores):
+            col = col_q1 if i % 2 == 0 else col_q2
+            with col:
+                st.metric(
+                    label=criterion_score.criterion,
+                    value=f"{criterion_score.score:.1f}点",
+                    delta=None
+                )
+                with st.expander(f"{criterion_score.criterion}の詳細", expanded=False):
+                    st.markdown(f"**評価理由:** {criterion_score.reason}")
+        
+        st.divider()
+        
+        # 改善ポイント
+        st.markdown("### 💡 改善ポイント")
+        for i, point in enumerate(quality_evaluation.improvement_points, 1):
+            st.markdown(f"{i}. {point}")
 
 
 def _get_top_strengths(matched, top_n=3):

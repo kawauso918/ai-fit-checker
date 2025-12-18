@@ -1,8 +1,9 @@
 """
 F3: 適合度スコアを計算
-weight加重平均 + ルールベースsummary生成
+weight加重平均 + ルールベースsummary生成 + 強調軸による加点
 """
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
+import re
 
 from models import (
     Requirement,
@@ -15,9 +16,24 @@ from models import (
 )
 
 
+# 強調軸のキーワード辞書（軸名→キーワードリスト）
+EMPHASIS_KEYWORDS = {
+    "技術力": ["技術", "スキル", "開発", "実装", "プログラミング", "コード", "アルゴリズム", "設計", "アーキテクチャ"],
+    "セキュリティ": ["セキュリティ", "セキュア", "脆弱性", "暗号化", "認証", "認可", "セキュリティ対策", "セキュリティ監査"],
+    "LLM": ["LLM", "大規模言語モデル", "GPT", "Claude", "生成AI", "AI", "機械学習", "自然言語処理", "NLP"],
+    "運用": ["運用", "監視", "ログ", "デプロイ", "CI/CD", "インフラ", "サーバー", "クラウド", "AWS", "GCP", "Azure"],
+    "リーダーシップ": ["リーダー", "マネジメント", "チーム", "管理", "指導", "統括", "責任者", "リード"],
+    "グローバル経験": ["グローバル", "海外", "国際", "英語", "多国籍", "クロスカルチャー", "グローバルチーム"],
+    "データ分析": ["データ分析", "データサイエンス", "統計", "分析", "可視化", "BI", "データウェアハウス"],
+    "フロントエンド": ["フロントエンド", "UI", "UX", "React", "Vue", "Angular", "JavaScript", "TypeScript", "CSS"],
+    "バックエンド": ["バックエンド", "API", "サーバー", "データベース", "マイクロサービス", "REST", "GraphQL"],
+}
+
+
 def calculate_scores(
     requirements: List[Requirement],
-    evidence_map: Dict[str, Evidence]
+    evidence_map: Dict[str, Evidence],
+    emphasis_axes: Optional[List[str]] = None
 ) -> Tuple[int, int, int, List[RequirementWithEvidence], List[Gap], str]:
     """
     要件と根拠からスコアを計算する（F3）
@@ -25,6 +41,7 @@ def calculate_scores(
     Args:
         requirements: 要件リスト（F1の出力）
         evidence_map: req_id -> Evidence の辞書（F2の出力）
+        emphasis_axes: 強調したい軸のリスト（例: ["技術力", "セキュリティ"]）
 
     Returns:
         tuple: (score_total, score_must, score_want, matched, gaps, summary)
@@ -39,16 +56,17 @@ def calculate_scores(
     must_requirements = [r for r in requirements if r.category == RequirementType.MUST]
     want_requirements = [r for r in requirements if r.category == RequirementType.WANT]
 
-    # スコア計算
+    # スコア計算（強調軸を渡す）
     score_must, must_matched, must_gaps = _calculate_category_score(
-        must_requirements, evidence_map
+        must_requirements, evidence_map, emphasis_axes
     )
     score_want, want_matched, want_gaps = _calculate_category_score(
-        want_requirements, evidence_map
+        want_requirements, evidence_map, emphasis_axes
     )
 
-    # 総合スコア = Must*0.7 + Want*0.3
+    # 総合スコア = Must*0.7 + Want*0.3（0-100にクリップ）
     score_total = int(score_must * 0.7 + score_want * 0.3)
+    score_total = min(100, max(0, score_total))  # 0-100にクリップ
 
     # matched と gaps を統合
     matched = must_matched + want_matched
@@ -70,10 +88,16 @@ def calculate_scores(
 
 def _calculate_category_score(
     requirements: List[Requirement],
-    evidence_map: Dict[str, Evidence]
+    evidence_map: Dict[str, Evidence],
+    emphasis_axes: Optional[List[str]] = None
 ) -> Tuple[int, List[RequirementWithEvidence], List[Gap]]:
     """
     特定カテゴリ（Must or Want）のスコアを計算
+
+    Args:
+        requirements: 要件リスト
+        evidence_map: req_id -> Evidence の辞書
+        emphasis_axes: 強調したい軸のリスト
 
     Returns:
         tuple: (score, matched, gaps)
@@ -112,6 +136,11 @@ def _calculate_category_score(
         else:
             points = 0.0
 
+        # 強調軸による加点（該当要件のみ）
+        if emphasis_axes and points > 0.0:  # マッチしている要件のみ加点
+            bonus = _calculate_emphasis_bonus(req, emphasis_axes)
+            points = min(1.0, points + bonus)  # 最大1.0にクリップ
+
         # Weight加重平均
         weight = req.weight
         total_weighted_score += points * weight
@@ -132,10 +161,53 @@ def _calculate_category_score(
     # カテゴリスコア計算（加重平均 * 100）
     if total_weight > 0:
         score = int((total_weighted_score / total_weight) * 100)
+        score = min(100, score)  # 0-100にクリップ
     else:
         score = 0
 
     return score, matched, gaps
+
+
+def _calculate_emphasis_bonus(requirement: Requirement, emphasis_axes: List[str]) -> float:
+    """
+    強調軸に基づいて加点を計算
+
+    Args:
+        requirement: 要件
+        emphasis_axes: 強調したい軸のリスト
+
+    Returns:
+        float: 加点値（最大0.1程度）
+    """
+    if not emphasis_axes:
+        return 0.0
+
+    # 要件の説明と引用を結合して検索対象にする
+    search_text = (requirement.description + " " + requirement.job_quote).lower()
+
+    # 各強調軸についてキーワードマッチを確認
+    matched_axes = []
+    for axis in emphasis_axes:
+        axis = axis.strip()
+        if not axis:
+            continue
+        
+        # キーワード辞書から取得、または軸名そのものをキーワードとして使用
+        keywords = EMPHASIS_KEYWORDS.get(axis, [axis])
+        
+        # いずれかのキーワードが含まれているか確認
+        for keyword in keywords:
+            if keyword.lower() in search_text:
+                matched_axes.append(axis)
+                break
+
+    # マッチした軸数に応じて加点（最大0.1）
+    if matched_axes:
+        # 1軸マッチで0.05、2軸以上で0.1
+        bonus = min(0.1, 0.05 * len(matched_axes))
+        return bonus
+
+    return 0.0
 
 
 def _generate_summary(
@@ -203,7 +275,8 @@ def _generate_summary(
 
 def get_score_result(
     requirements: List[Requirement],
-    evidence_map: Dict[str, Evidence]
+    evidence_map: Dict[str, Evidence],
+    emphasis_axes: Optional[List[str]] = None
 ) -> ScoreResult:
     """
     ScoreResult形式でスコアを返す（便利関数）
@@ -211,12 +284,13 @@ def get_score_result(
     Args:
         requirements: 要件リスト
         evidence_map: req_id -> Evidence の辞書
+        emphasis_axes: 強調したい軸のリスト
 
     Returns:
         ScoreResult: スコア計算結果
     """
     score_total, score_must, score_want, matched, gaps, summary = calculate_scores(
-        requirements, evidence_map
+        requirements, evidence_map, emphasis_axes
     )
 
     return ScoreResult(

@@ -153,6 +153,12 @@ def main():
             st.error("❌ 求人票と職務経歴書の両方を入力してください。")
             return
 
+        # 強調軸をリストに変換（カンマ区切り対応）
+        emphasis_axes_list = []
+        if emphasis_axis:
+            # カンマ区切りで分割し、空白を削除
+            emphasis_axes_list = [axis.strip() for axis in emphasis_axis.split(",") if axis.strip()]
+
         # オプション辞書を作成
         options = {
             "llm_provider": llm_provider,
@@ -180,7 +186,7 @@ def main():
             # F3: スコア計算
             with st.spinner("⏳ F3: スコアを計算中..."):
                 score_total, score_must, score_want, matched, gaps, summary = calculate_scores(
-                    requirements, evidence_map
+                    requirements, evidence_map, emphasis_axes=emphasis_axes_list
                 )
                 st.success(f"✅ F3完了: 総合スコア {score_total}点")
 

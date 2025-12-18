@@ -1,21 +1,122 @@
 """
 F2: 職務経歴書から根拠を抽出
-PydanticOutputParser + 原文引用検証で安定化
+PydanticOutputParser + 原文引用検証で安定化 + セクション分解で精度向上
 """
 import os
 import re
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from dotenv import load_dotenv
 
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
+from pydantic import BaseModel, Field
 
 from models import Requirement, Evidence, F2Output, ConfidenceLevel
 
 # 環境変数読み込み
 load_dotenv()
+
+
+# ==================== セクション分解モデル ====================
+class ResumeSection(BaseModel):
+    """職務経歴書のセクション"""
+    section_type: str = Field(..., description="セクションタイプ（summary/skills/projects/achievements/roles）")
+    content: str = Field(..., description="セクションの内容")
+
+
+class StructuredResume(BaseModel):
+    """構造化された職務経歴書"""
+    sections: List[ResumeSection] = Field(..., description="セクションリスト")
+
+
+def _structure_resume_text(
+    resume_text: str,
+    llm_provider: str = "openai",
+    model_name: Optional[str] = None
+) -> Optional[Dict[str, str]]:
+    """
+    職務経歴書をセクションに分解
+    
+    Args:
+        resume_text: 職務経歴書のテキスト
+        llm_provider: LLMプロバイダー
+        model_name: モデル名
+    
+    Returns:
+        Optional[Dict[str, str]]: セクションタイプ -> 内容の辞書。失敗時はNone
+    """
+    if not resume_text or len(resume_text.strip()) < 50:
+        return None
+    
+    try:
+        # LLMの初期化
+        if llm_provider == "anthropic":
+            llm = ChatAnthropic(
+                model=model_name or "claude-3-5-sonnet-20241022",
+                temperature=0.0,
+                api_key=os.getenv("ANTHROPIC_API_KEY")
+            )
+        else:  # openai
+            llm = ChatOpenAI(
+                model=model_name or "gpt-4o-mini",
+                temperature=0.0,
+                api_key=os.getenv("OPENAI_API_KEY")
+            )
+        
+        # パーサー設定
+        parser = PydanticOutputParser(pydantic_object=StructuredResume)
+        
+        # プロンプト作成
+        prompt_template = PromptTemplate(
+            template="""あなたは職務経歴書の構造化専門家です。以下の職務経歴書をセクションに分類してください。
+
+職務経歴書：
+{resume_text}
+
+セクション分類：
+以下のセクションタイプに分類してください（該当するもののみ）：
+- summary: 要約・自己PR・プロフィール
+- skills: スキル・技術スタック
+- projects: プロジェクト・開発実績
+- achievements: 成果・実績・受賞歴
+- roles: 職務経歴・職務内容・担当業務
+
+分類ルール：
+1. 各セクションは元のテキストをそのまま保持（改変禁止）
+2. 1つのテキストが複数のセクションタイプに該当する場合は、最も適切な1つに分類
+3. 分類できない部分は無視してOK
+4. セクションタイプは小文字で指定（summary/skills/projects/achievements/roles）
+
+{format_instructions}
+""",
+            input_variables=["resume_text"],
+            partial_variables={"format_instructions": parser.get_format_instructions()}
+        )
+        
+        # テキストをカット（長すぎる場合）
+        resume_text_trimmed = resume_text[:3000] + "..." if len(resume_text) > 3000 else resume_text
+        
+        # LLM実行
+        prompt = prompt_template.format(resume_text=resume_text_trimmed)
+        output = llm.invoke(prompt)
+        result = parser.parse(output.content)
+        
+        # 辞書形式に変換
+        sections_dict = {}
+        for section in result.sections:
+            if section.section_type in sections_dict:
+                # 既存のセクションに追記
+                sections_dict[section.section_type] += "\n\n" + section.content
+            else:
+                sections_dict[section.section_type] = section.content
+        
+        return sections_dict if sections_dict else None
+        
+    except Exception as e:
+        print(f"⚠️  セクション分解に失敗、フォールバック: {e}")
+        return None
 
 
 def extract_evidence(
@@ -45,6 +146,14 @@ def extract_evidence(
     model_name = options.get("model_name", None)
     verify_quotes = options.get("verify_quotes", True)
 
+    # 職務経歴書をセクション分解（失敗時は従来通り）
+    structured_resume = None
+    try:
+        structured_resume = _structure_resume_text(resume_text, llm_provider, model_name)
+    except Exception as e:
+        print(f"⚠️  セクション分解をスキップ: {e}")
+        structured_resume = None
+
     # LLMの初期化
     try:
         if llm_provider == "anthropic":
@@ -69,12 +178,31 @@ def extract_evidence(
             for req in requirements
         ])
 
-        # プロンプト作成
+        # プロンプト作成（セクション情報を含む）
+        if structured_resume:
+            # セクション情報を整形
+            sections_str = ""
+            for section_type, content in structured_resume.items():
+                section_label = {
+                    "summary": "【要約・自己PR】",
+                    "skills": "【スキル・技術スタック】",
+                    "projects": "【プロジェクト・開発実績】",
+                    "achievements": "【成果・実績】",
+                    "roles": "【職務経歴・担当業務】"
+                }.get(section_type, f"【{section_type}】")
+                sections_str += f"{section_label}\n{content}\n\n"
+            
+            resume_text_for_prompt = sections_str.strip()
+            prompt_note = "\n注意: 職務経歴書はセクションごとに分類されています。各セクションの内容を参照して根拠を抽出してください。"
+        else:
+            resume_text_for_prompt = resume_text
+            prompt_note = ""
+        
         prompt_template = PromptTemplate(
             template="""あなたは職務経歴書の分析専門家です。以下の職務経歴書から、各要件に対する根拠を抽出してください。
 
 職務経歴書：
-{resume_text}
+{resume_text}{prompt_note}
 
 要件リスト：
 {requirements_str}
@@ -90,7 +218,7 @@ def extract_evidence(
 
 {format_instructions}
 """,
-            input_variables=["resume_text", "requirements_str"],
+            input_variables=["resume_text", "requirements_str", "prompt_note"],
             partial_variables={"format_instructions": parser.get_format_instructions()}
         )
 
@@ -99,8 +227,9 @@ def extract_evidence(
         for attempt in range(max_retries):
             try:
                 prompt = prompt_template.format(
-                    resume_text=resume_text,
-                    requirements_str=requirements_str
+                    resume_text=resume_text_for_prompt,
+                    requirements_str=requirements_str,
+                    prompt_note=prompt_note
                 )
                 output = llm.invoke(prompt)
                 result = parser.parse(output.content)

@@ -10,6 +10,7 @@ from f1_extract_requirements import extract_requirements
 from f2_extract_evidence import extract_evidence
 from f3_score import calculate_scores
 from f4_generate_improvements import generate_improvements
+from f5_generate_interview_qa import generate_interview_qa
 from models import RequirementType, ConfidenceLevel
 from utils import verify_quote_in_text
 from pdf_export import generate_pdf
@@ -249,6 +250,12 @@ def main():
                             job_text_item, resume_text, requirements, matched, gaps, options
                         )
                     
+                    # F5: 面接想定Q&A生成
+                    with st.spinner(f"⏳ 求人{idx} - F5: 面接想定Q&Aを生成中..."):
+                        interview_qas = generate_interview_qa(
+                            job_text_item, resume_text, matched, gaps, summary, options
+                        )
+                    
                     # 結果を保存
                     all_results.append({
                         "job_index": idx,
@@ -263,6 +270,7 @@ def main():
                         "gaps": gaps,
                         "summary": summary,
                         "improvements": improvements,
+                        "interview_qas": interview_qas,
                     })
                     
                     st.success(f"✅ 求人{idx}の分析完了: 総合スコア {score_total}点")
@@ -306,6 +314,13 @@ def main():
                     )
                     st.success(f"✅ F4完了: {len(improvements.action_items)}件の行動計画を生成")
 
+                # F5: 面接想定Q&A生成
+                with st.spinner("⏳ F5: 面接想定Q&Aを生成中..."):
+                    interview_qas = generate_interview_qa(
+                        job_text, resume_text, matched, gaps, summary, options
+                    )
+                    st.success(f"✅ F5完了: {len(interview_qas.qa_list)}件のQ&Aを生成")
+
                 # 実行時間計測終了
                 end_time = time.time()
                 execution_time = end_time - start_time
@@ -323,6 +338,7 @@ def main():
                     "gaps": gaps,
                     "summary": summary,
                     "improvements": improvements,
+                    "interview_qas": interview_qas,
                     "resume_text": resume_text,  # 引用検証用に保存
                 }
 
@@ -600,6 +616,23 @@ def _render_single_result(result_dict: dict, resume_text: str):
                     st.markdown(f"- **{a.action}**")
                     st.markdown(f"  - 根拠: {a.rationale}")
                     st.markdown(f"  - 期待効果: {a.estimated_impact}")
+
+    st.divider()
+
+    # 面接想定Q&A
+    interview_qas = result_dict.get('interview_qas')
+    if interview_qas and interview_qas.qa_list:
+        st.subheader("🎤 面接想定Q&A")
+        st.markdown(f"**{len(interview_qas.qa_list)}件の質問と回答の骨子**")
+
+        for i, qa in enumerate(interview_qas.qa_list, 1):
+            with st.expander(
+                f"**Q{i}:** {qa.question}",
+                expanded=(i <= 3)  # 最初の3件は展開
+            ):
+                st.markdown("**回答の骨子:**")
+                for outline in qa.answer_outline:
+                    st.markdown(f"- {outline}")
 
 
 def _get_top_strengths(matched, top_n=3):

@@ -164,6 +164,23 @@ class F4Output(BaseModel):
     improvements: Improvements = Field(..., description="改善案")
 
 
+# ==================== F5: 面接想定Q&A生成 ====================
+class InterviewQA(BaseModel):
+    """面接Q&Aの1項目"""
+    question: str = Field(..., description="質問内容")
+    answer_outline: List[str] = Field(..., description="回答の骨子（箇条書き）")
+
+
+class InterviewQAs(BaseModel):
+    """面接Q&Aの全体"""
+    qa_list: List[InterviewQA] = Field(..., description="Q&Aリスト（10問程度）")
+
+
+class F5Output(BaseModel):
+    """F5の出力形式"""
+    interview_qas: InterviewQAs = Field(..., description="面接Q&A")
+
+
 # ==================== 実行メタ情報 ====================
 class ExecutionMeta(BaseModel):
     """実行時のメタ情報"""

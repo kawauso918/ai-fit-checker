@@ -369,10 +369,12 @@ def main():
 
             for i, edit in enumerate(result['improvements'].resume_edits, 1):
                 st.markdown(f"**{i}. 対象要件**: {edit.target_gap} ({edit.edit_type})")
+                
                 st.markdown("**追記テンプレート**:")
                 st.code(edit.template, language="text")
+                
                 st.markdown("**具体例**:")
-                st.info(edit.example)
+                st.code(edit.example, language="text")
                 st.markdown("---")
 
         # 行動計画

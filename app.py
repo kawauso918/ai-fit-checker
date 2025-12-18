@@ -113,6 +113,17 @@ def main():
             key="emphasis_axis"
         )
 
+    # 実績メモ（オプション）
+    with st.expander("📝 実績メモ（オプション）", expanded=False):
+        st.markdown("**追加の実績・経験を記載してください**")
+        st.markdown("複数の実績を記載することで、根拠抽出の精度が向上します。")
+        achievement_notes = st.text_area(
+            "実績メモを貼り付けてください（複数の実績を改行区切りで記載可能）",
+            height=200,
+            placeholder="例：\n\n【プロジェクトA】\n・ECサイトのリニューアルをリード\n・レスポンスタイムを50%改善\n・チーム5名をマネジメント\n\n【プロジェクトB】\n・機械学習モデルの開発\n・精度90%を達成",
+            key="achievement_notes"
+        )
+
     # 詳細設定（expander）
     with st.expander("⚙️ 詳細設定（上級者向け）"):
         st.markdown("**LLMモデル設定**")
@@ -237,7 +248,10 @@ def main():
                     
                     # F2: 根拠抽出
                     with st.spinner(f"⏳ 求人{idx} - F2: 職務経歴から根拠を抽出中..."):
-                        evidence_map = extract_evidence(resume_text, requirements, options)
+                        # 実績メモをoptionsに追加
+                        options_with_notes = options.copy()
+                        options_with_notes["achievement_notes"] = achievement_notes if achievement_notes else None
+                        evidence_map = extract_evidence(resume_text, requirements, options_with_notes)
                     
                     # F3: スコア計算
                     with st.spinner(f"⏳ 求人{idx} - F3: スコアを計算中..."):
@@ -310,7 +324,10 @@ def main():
 
                 # F2: 根拠抽出
                 with st.spinner("⏳ F2: 職務経歴から根拠を抽出中..."):
-                    evidence_map = extract_evidence(resume_text, requirements, options)
+                    # 実績メモをoptionsに追加
+                    options_with_notes = options.copy()
+                    options_with_notes["achievement_notes"] = achievement_notes if achievement_notes else None
+                    evidence_map = extract_evidence(resume_text, requirements, options_with_notes)
                     st.success(f"✅ F2完了: {len(evidence_map)}件の根拠を分析")
 
                 # F3: スコア計算

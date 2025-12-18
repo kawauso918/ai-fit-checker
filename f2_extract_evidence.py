@@ -1,16 +1,18 @@
 """
 F2: 職務経歴書から根拠を抽出
-PydanticOutputParser + 原文引用検証で安定化 + セクション分解で精度向上
+PydanticOutputParser + 原文引用検証で安定化 + セクション分解で精度向上 + RAG検索
 """
 import os
 import re
 from typing import List, Dict, Optional, Tuple
 from dotenv import load_dotenv
 
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_anthropic import ChatAnthropic
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
+from langchain_community.vectorstores import Chroma
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pydantic import BaseModel, Field
 
 from models import Requirement, Evidence, F2Output, ConfidenceLevel
@@ -119,6 +121,72 @@ def _structure_resume_text(
         return None
 
 
+def _retrieve_rag_evidence(
+    achievement_notes: str,
+    requirements: List[Requirement],
+    top_k: int = 3
+) -> Dict[str, List[str]]:
+    """
+    実績メモからRAG検索で根拠候補を取得
+    
+    Args:
+        achievement_notes: 実績メモのテキスト
+        requirements: 要件リスト
+        top_k: 各要件に対して取得する候補数
+    
+    Returns:
+        Dict[str, List[str]]: req_id -> 根拠候補リストの辞書
+    """
+    if not achievement_notes or not achievement_notes.strip():
+        return {}
+    
+    try:
+        # テキストをチャンクに分割
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=500,
+            chunk_overlap=100,
+            separators=["\n\n", "\n", "。", "、", " ", ""]
+        )
+        texts = text_splitter.split_text(achievement_notes)
+        
+        if not texts:
+            return {}
+        
+        # ベクトルストアを作成（インメモリ、一時的なコレクション名）
+        embeddings = OpenAIEmbeddings(api_key=os.getenv("OPENAI_API_KEY"))
+        import uuid
+        collection_name = f"achievement_notes_{uuid.uuid4().hex[:8]}"
+        vectorstore = Chroma.from_texts(
+            texts=texts,
+            embedding=embeddings,
+            collection_name=collection_name
+        )
+        
+        # 各要件に対して関連箇所を検索
+        rag_evidence = {}
+        for req in requirements:
+            # 要件の説明をクエリとして使用
+            query = req.description
+            try:
+                docs = vectorstore.similarity_search(query, k=top_k)
+                rag_evidence[req.req_id] = [doc.page_content for doc in docs]
+            except Exception as e:
+                print(f"⚠️  RAG検索エラー（req_id={req.req_id}）: {e}")
+                rag_evidence[req.req_id] = []
+        
+        # クリーンアップ
+        try:
+            vectorstore.delete_collection()
+        except:
+            pass
+        
+        return rag_evidence
+        
+    except Exception as e:
+        print(f"⚠️  RAG検索に失敗: {e}")
+        return {}
+
+
 def extract_evidence(
     resume_text: str,
     requirements: List[Requirement],
@@ -134,6 +202,7 @@ def extract_evidence(
             - llm_provider: "openai" or "anthropic"（デフォルト "openai"）
             - model_name: モデル名
             - verify_quotes: 引用検証を行うか（デフォルト True）
+            - achievement_notes: 実績メモのテキスト（オプション）
 
     Returns:
         Dict[str, Evidence]: req_id -> Evidence の辞書（全req_idが必ず存在）
@@ -145,6 +214,16 @@ def extract_evidence(
     llm_provider = options.get("llm_provider", "openai")
     model_name = options.get("model_name", None)
     verify_quotes = options.get("verify_quotes", True)
+    achievement_notes = options.get("achievement_notes", None)
+    
+    # RAG検索で実績メモから根拠候補を取得
+    rag_evidence = {}
+    if achievement_notes and achievement_notes.strip():
+        try:
+            rag_evidence = _retrieve_rag_evidence(achievement_notes, requirements)
+        except Exception as e:
+            print(f"⚠️  RAG検索をスキップ: {e}")
+            rag_evidence = {}
 
     # 職務経歴書をセクション分解（失敗時は従来通り）
     structured_resume = None
@@ -198,11 +277,22 @@ def extract_evidence(
             resume_text_for_prompt = resume_text
             prompt_note = ""
         
+        # RAG検索結果を追加
+        rag_notes_str = ""
+        if rag_evidence:
+            rag_notes_str = "\n\n【実績メモからの関連箇所（参考情報）】\n"
+            for req_id, evidence_list in rag_evidence.items():
+                if evidence_list:
+                    req_desc = next((r.description for r in requirements if r.req_id == req_id), req_id)
+                    rag_notes_str += f"\n[{req_id}] {req_desc}:\n"
+                    for i, evidence in enumerate(evidence_list, 1):
+                        rag_notes_str += f"  {i}. {evidence[:200]}...\n"
+        
         prompt_template = PromptTemplate(
             template="""あなたは職務経歴書の分析専門家です。以下の職務経歴書から、各要件に対する根拠を抽出してください。
 
 職務経歴書：
-{resume_text}{prompt_note}
+{resume_text}{prompt_note}{rag_notes}
 
 要件リスト：
 {requirements_str}
@@ -210,15 +300,16 @@ def extract_evidence(
 抽出ルール：
 1. **重要**: resume_quotesには職務経歴書からの原文をそのまま引用すること（改変・要約は絶対に禁止）
 2. 各要件に対して、マッチする経験やスキルがあれば原文を引用
-3. マッチしない場合はresume_quotesを空リスト[]にし、confidenceを0.0に設定
-4. confidenceは0.0〜1.0で設定（1.0=完全一致、0.7以上=高、0.4〜0.7=中、0.4未満=低、0.0=マッチなし）
-5. confidence_levelは自動設定されるため、confidenceの値だけ設定すればOK
-6. reasonには判定理由を簡潔に記載（なぜマッチする/しないか）
-7. **全要件に対して必ず根拠を抽出**（マッチしない場合も含める）
+3. 実績メモからの関連箇所は参考情報として使用し、職務経歴書に該当する記述があればそれを優先して引用
+4. マッチしない場合はresume_quotesを空リスト[]にし、confidenceを0.0に設定
+5. confidenceは0.0〜1.0で設定（1.0=完全一致、0.7以上=高、0.4〜0.7=中、0.4未満=低、0.0=マッチなし）
+6. confidence_levelは自動設定されるため、confidenceの値だけ設定すればOK
+7. reasonには判定理由を簡潔に記載（なぜマッチする/しないか）
+8. **全要件に対して必ず根拠を抽出**（マッチしない場合も含める）
 
 {format_instructions}
 """,
-            input_variables=["resume_text", "requirements_str", "prompt_note"],
+            input_variables=["resume_text", "requirements_str", "prompt_note", "rag_notes"],
             partial_variables={"format_instructions": parser.get_format_instructions()}
         )
 
@@ -229,7 +320,8 @@ def extract_evidence(
                 prompt = prompt_template.format(
                     resume_text=resume_text_for_prompt,
                     requirements_str=requirements_str,
-                    prompt_note=prompt_note
+                    prompt_note=prompt_note,
+                    rag_notes=rag_notes_str
                 )
                 output = llm.invoke(prompt)
                 result = parser.parse(output.content)

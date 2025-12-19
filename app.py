@@ -15,6 +15,8 @@ from f6_quality_evaluation import evaluate_quality
 from models import RequirementType, ConfidenceLevel, QuoteSource
 from utils import verify_quote_in_text
 from pdf_export import generate_pdf
+from rag_error_handler import validate_rag_inputs, get_rag_status
+import os
 
 
 def run_analysis_core(
@@ -24,6 +26,34 @@ def run_analysis_core(
     emphasis_axes: list = None,
     options: dict = None
 ) -> dict:
+    """
+    分析処理のコア関数（Streamlit UIに依存しない）
+    
+    Args:
+        job_text: 求人票のテキスト
+        resume_text: 職務経歴書のテキスト
+        achievement_notes: 実績メモ（オプション）
+        emphasis_axes: 強調軸のリスト（オプション）
+        options: オプション辞書（llm_provider, model_name, temperature等）
+    
+    Returns:
+        dict: 分析結果の辞書
+            - timestamp: 実行日時
+            - execution_time: 実行時間（秒）
+            - requirements: 抽出された要件リスト
+            - evidence_map: 根拠マップ
+            - score_total: 総合スコア
+            - score_must: Mustスコア
+            - score_want: Wantスコア
+            - matched: マッチした要件リスト
+            - gaps: ギャップのある要件リスト
+            - summary: サマリ
+            - improvements: 改善案
+            - interview_qas: 面接Q&A
+            - quality_evaluation: 品質評価（Noneの可能性あり）
+            - rag_error_message: RAGエラーメッセージ（Noneの可能性あり）
+            - rag_warning_message: RAG警告メッセージ（Noneの可能性あり）
+    """
     """
     分析処理のコア関数（Streamlit UIに依存しない）
     
@@ -120,6 +150,7 @@ def run_analysis_core(
         "interview_qas": interview_qas,
         "quality_evaluation": quality_evaluation,
         "rag_error_message": rag_error_message,
+        "rag_warning_message": options_with_notes.get("rag_warning_message"),
     }
     
     return result
@@ -226,11 +257,20 @@ def main():
         st.markdown("**追加の実績・経験を記載してください**")
         st.markdown("複数の実績を記載することで、根拠抽出の精度が向上します。")
         achievement_notes = st.text_area(
-            "実績メモを貼り付けてください（複数の実績を改行区切りで記載可能）",
+            "実績メモを貼り付けてください（複数の実績を改行区切りで記載可能、最大15000文字）",
             height=200,
             placeholder="例：\n\n【プロジェクトA】\n・ECサイトのリニューアルをリード\n・レスポンスタイムを50%改善\n・チーム5名をマネジメント\n\n【プロジェクトB】\n・機械学習モデルの開発\n・精度90%を達成",
             key="achievement_notes"
         )
+        
+        # RAG使用時のAPIキーチェック（実績メモが入力されている場合のみ）
+        if achievement_notes and achievement_notes.strip():
+            is_valid, error_msg, warning_msg = validate_rag_inputs(achievement_notes, require_api_key=True)
+            if error_msg:
+                st.error(error_msg)
+                st.stop()
+            elif warning_msg:
+                st.warning(warning_msg)
 
     # 詳細設定（expander）
     with st.expander("⚙️ 詳細設定（上級者向け）"):
@@ -361,12 +401,34 @@ def main():
                         options_with_notes["achievement_notes"] = achievement_notes if achievement_notes else None
                         evidence_map = extract_evidence(resume_text, requirements, options_with_notes)
                         
-                        # RAG状態を表示
-                        rag_error = options_with_notes.get("rag_error_message")
-                        if rag_error:
-                            st.warning(f"⚠️ RAG検索: {rag_error}")
-                        elif achievement_notes and achievement_notes.strip():
-                            st.info("ℹ️ RAG検索が有効です（実績メモから根拠候補を取得）")
+                        # RAG状態を表示（最初の求人のみ表示）
+                        if idx == 1:
+                            rag_error = options_with_notes.get("rag_error_message")
+                            rag_warning = options_with_notes.get("rag_warning_message")
+                            # RAG検索で取得した根拠候補数を計算（各EvidenceのquotesからRAG由来をカウント）
+                            rag_evidence_count = 0
+                            for ev in evidence_map.values():
+                                if hasattr(ev, 'quotes') and ev.quotes:
+                                    rag_evidence_count += sum(1 for q in ev.quotes if q.source.value == "rag")
+                            
+                            # RAG状態表示（expander内）
+                            with st.expander("🔍 RAG検索状態", expanded=False):
+                                status, status_msg = get_rag_status(
+                                    achievement_notes,
+                                    rag_error,
+                                    rag_evidence_count
+                                )
+                                if status == "enabled":
+                                    st.success(f"✅ {status_msg}")
+                                elif status == "error":
+                                    st.error(f"❌ {status_msg}")
+                                elif status == "disabled":
+                                    st.info(f"ℹ️ {status_msg}")
+                                else:
+                                    st.info(f"ℹ️ {status_msg}")
+                                
+                                if rag_warning:
+                                    st.warning(f"⚠️ {rag_warning}")
                     
                     # F3: スコア計算
                     with st.spinner(f"⏳ 求人{idx} - F3: スコアを計算中..."):
@@ -443,10 +505,32 @@ def main():
                     )
                     
                     # RAG状態を表示
-                    if result.get("rag_error_message"):
-                        st.warning(f"⚠️ RAG検索: {result['rag_error_message']}")
-                    elif achievement_notes and achievement_notes.strip():
-                        st.info("ℹ️ RAG検索が有効です（実績メモから根拠候補を取得）")
+                    rag_error = result.get("rag_error_message")
+                    rag_warning = result.get("rag_warning_message")
+                    # RAG検索で取得した根拠候補数を計算（各EvidenceのquotesからRAG由来をカウント）
+                    rag_evidence_count = 0
+                    for ev in result.get("evidence_map", {}).values():
+                        if hasattr(ev, 'quotes') and ev.quotes:
+                            rag_evidence_count += sum(1 for q in ev.quotes if q.source.value == "rag")
+                    
+                    # RAG状態表示（expander内）
+                    with st.expander("🔍 RAG検索状態", expanded=False):
+                        status, status_msg = get_rag_status(
+                            achievement_notes,
+                            rag_error,
+                            rag_evidence_count
+                        )
+                        if status == "enabled":
+                            st.success(f"✅ {status_msg}")
+                        elif status == "error":
+                            st.error(f"❌ {status_msg}")
+                        elif status == "disabled":
+                            st.info(f"ℹ️ {status_msg}")
+                        else:
+                            st.info(f"ℹ️ {status_msg}")
+                        
+                        if rag_warning:
+                            st.warning(f"⚠️ {rag_warning}")
                     
                     # 各ステップの成功メッセージを表示
                     st.success(f"✅ F1完了: {len(result['requirements'])}件の要件を抽出")

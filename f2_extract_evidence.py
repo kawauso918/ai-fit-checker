@@ -192,7 +192,7 @@ def _retrieve_rag_evidence(
     achievement_notes: str,
     requirements: List[Requirement],
     top_k: int = 3
-) -> Tuple[Dict[str, List[Tuple[str, int]]], Optional[str]]:
+) -> Tuple[Dict[str, List[Tuple[str, int]]], Optional[str], Optional[str]]:
     """
     実績メモからRAG検索で根拠候補を取得
     
@@ -202,27 +202,28 @@ def _retrieve_rag_evidence(
         top_k: 各要件に対して取得する候補数
     
     Returns:
-        Tuple[Dict[str, List[Tuple[str, int]]], Optional[str]]: 
-            (req_id -> (テキスト, チャンクインデックス)のリストの辞書, エラーメッセージ)
+        Tuple[Dict[str, List[Tuple[str, int]]], Optional[str], Optional[str]]: 
+            (req_id -> (テキスト, チャンクインデックス)のリストの辞書, エラーメッセージ, 警告メッセージ)
     """
-    if not achievement_notes or not achievement_notes.strip():
-        return {}, None
+    from rag_error_handler import (
+        validate_rag_inputs,
+        handle_rag_initialization_error,
+        handle_rag_search_error
+    )
     
-    # テキスト長チェック（最大10000文字）
-    MAX_TEXT_LENGTH = 10000
-    if len(achievement_notes) > MAX_TEXT_LENGTH:
+    # 入力検証
+    is_valid, error_msg, warning_msg = validate_rag_inputs(achievement_notes, require_api_key=False)
+    
+    if not is_valid:
+        return {}, error_msg, warning_msg
+    
+    # 警告メッセージがある場合（長すぎるテキスト）、先頭をカット
+    if warning_msg:
+        MAX_TEXT_LENGTH = 15000
         achievement_notes = achievement_notes[:MAX_TEXT_LENGTH]
-        error_msg = f"実績メモが長すぎるため、最初の{MAX_TEXT_LENGTH}文字のみを使用します"
-        print(f"⚠️  {error_msg}")
-    else:
-        error_msg = None
     
-    # OpenAI APIキーの確認
+    # APIキーを取得（検証済み）
     api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        error_msg = "OPENAI_API_KEYが設定されていません。RAG検索をスキップします"
-        print(f"⚠️  {error_msg}")
-        return {}, error_msg
     
     try:
         # テキストをチャンクに分割
@@ -235,8 +236,7 @@ def _retrieve_rag_evidence(
         
         if not texts:
             error_msg = "実績メモから有効なチャンクを生成できませんでした"
-            print(f"⚠️  {error_msg}")
-            return {}, error_msg
+            return {}, error_msg, warning_msg
         
         # ベクトルストアを作成（インメモリ、一時的なコレクション名）
         try:
@@ -248,10 +248,18 @@ def _retrieve_rag_evidence(
                 embedding=embeddings,
                 collection_name=collection_name
             )
+        except ImportError as init_error:
+            # 依存パッケージ不足
+            rag_evidence, error_msg = handle_rag_initialization_error(init_error, "dependency")
+            return rag_evidence, error_msg, warning_msg
+        except IOError as init_error:
+            # IOエラー
+            rag_evidence, error_msg = handle_rag_initialization_error(init_error, "io")
+            return rag_evidence, error_msg, warning_msg
         except Exception as init_error:
-            error_msg = f"ベクトルストアの初期化に失敗しました: {init_error}"
-            print(f"⚠️  {error_msg}")
-            return {}, error_msg
+            # その他の初期化エラー
+            rag_evidence, error_msg = handle_rag_initialization_error(init_error, "vectorstore")
+            return rag_evidence, error_msg, warning_msg
         
         # 各要件に対して関連箇所を検索
         rag_evidence = {}
@@ -272,8 +280,7 @@ def _retrieve_rag_evidence(
                     rag_results.append((doc.page_content, chunk_index))
                 rag_evidence[req.req_id] = rag_results
             except Exception as e:
-                print(f"⚠️  RAG検索エラー（req_id={req.req_id}）: {e}")
-                rag_evidence[req.req_id] = []
+                rag_evidence[req.req_id] = handle_rag_search_error(req.req_id, e)
         
         # クリーンアップ
         try:
@@ -281,12 +288,11 @@ def _retrieve_rag_evidence(
         except:
             pass
         
-        return rag_evidence, error_msg
+        return rag_evidence, error_msg, warning_msg
         
     except Exception as e:
-        error_msg = f"RAG検索に失敗: {e}"
-        print(f"⚠️  {error_msg}")
-        return {}, error_msg
+        rag_evidence, error_msg = handle_rag_initialization_error(e, "unknown")
+        return rag_evidence, error_msg, warning_msg
 
 
 def extract_evidence(
@@ -321,11 +327,14 @@ def extract_evidence(
     # RAG検索で実績メモから根拠候補を取得
     rag_evidence = {}
     rag_error_message = None
+    rag_warning_message = None
     if achievement_notes and achievement_notes.strip():
-        rag_evidence, rag_error_message = _retrieve_rag_evidence(achievement_notes, requirements)
-        # エラーメッセージをoptionsに保存（UI表示用）
+        rag_evidence, rag_error_message, rag_warning_message = _retrieve_rag_evidence(achievement_notes, requirements)
+        # エラーメッセージと警告メッセージをoptionsに保存（UI表示用）
         if rag_error_message:
             options["rag_error_message"] = rag_error_message
+        if rag_warning_message:
+            options["rag_warning_message"] = rag_warning_message
 
     # 職務経歴書をセクション分解（失敗時は従来通り）
     structured_resume = None

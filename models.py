@@ -22,6 +22,22 @@ class ConfidenceLevel(str, Enum):
     NONE = "None"      # 0.0（マッチなし）
 
 
+class QuoteSource(str, Enum):
+    """引用の出どころ"""
+    RESUME = "resume"  # 職務経歴書
+    RAG = "rag"  # 実績メモ（RAG検索）
+
+
+class Quote(BaseModel):
+    """引用情報"""
+    text: str = Field(..., description="引用テキスト")
+    source: QuoteSource = Field(..., description="引用の出どころ")
+    source_id: Optional[int] = Field(
+        default=None,
+        description="RAG由来の場合、実績メモの何番目のチャンク由来か（0始まり）。職務経歴書由来の場合はNone"
+    )
+
+
 # ==================== F1: 求人要件抽出 ====================
 class Requirement(BaseModel):
     """求人票から抽出した1つの要件"""
@@ -49,17 +65,44 @@ class F1Output(BaseModel):
 class Evidence(BaseModel):
     """1つの要件に対する職務経歴書からの根拠"""
     req_id: str = Field(..., description="対応する要件ID")
-    resume_quotes: List[str] = Field(
+    quotes: List[Quote] = Field(
         default_factory=list,
-        description="職務経歴書からの原文引用（改変禁止）。複数可。空リストはマッチなし。"
+        description="引用リスト（職務経歴書または実績メモからの引用）。複数可。空リストはマッチなし。"
+    )
+    # 後方互換性のため残す（非推奨）
+    resume_quotes: Optional[List[str]] = Field(
+        default=None,
+        description="[非推奨] 職務経歴書からの原文引用。quotesを使用してください。"
     )
     quote_sources: Optional[List[str]] = Field(
         default=None,
-        description="各引用の出どころ（'resume'=職務経歴書, 'rag'=実績メモRAG）。resume_quotesと同じ順序。"
+        description="[非推奨] 各引用の出どころ。quotesを使用してください。"
     )
     confidence: float = Field(..., ge=0.0, le=1.0, description="マッチ度（0.0〜1.0）")
     confidence_level: ConfidenceLevel = Field(..., description="信頼度レベル")
     reason: str = Field(..., description="判定理由（なぜマッチ/しないか）")
+    
+    def __init__(self, **data):
+        """後方互換性: resume_quotes/quote_sourcesからquotesを生成"""
+        # 後方互換性: resume_quotes/quote_sourcesが指定されている場合、quotesに変換
+        if "quotes" not in data and "resume_quotes" in data:
+            resume_quotes = data.get("resume_quotes", [])
+            quote_sources = data.get("quote_sources", [])
+            
+            if resume_quotes:
+                quotes = []
+                for i, quote_text in enumerate(resume_quotes):
+                    source_str = quote_sources[i] if quote_sources and i < len(quote_sources) else "resume"
+                    source = QuoteSource.RESUME if source_str == "resume" else QuoteSource.RAG
+                    quotes.append(Quote(text=quote_text, source=source, source_id=None))
+                data["quotes"] = quotes
+                # 後方互換性のため、resume_quotesも残す
+                if "resume_quotes" not in data:
+                    data["resume_quotes"] = resume_quotes
+                if "quote_sources" not in data:
+                    data["quote_sources"] = quote_sources
+        
+        super().__init__(**data)
 
     @field_validator("confidence")
     @classmethod

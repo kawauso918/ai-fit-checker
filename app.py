@@ -12,7 +12,7 @@ from f3_score import calculate_scores
 from f4_generate_improvements import generate_improvements
 from f5_generate_interview_qa import generate_interview_qa
 from f6_quality_evaluation import evaluate_quality
-from models import RequirementType, ConfidenceLevel
+from models import RequirementType, ConfidenceLevel, QuoteSource
 from utils import verify_quote_in_text
 from pdf_export import generate_pdf
 
@@ -655,23 +655,38 @@ def _render_single_result(result_dict: dict, resume_text: str):
                 st.markdown("**判定理由**:")
                 st.write(m.evidence.reason)
 
-                if m.evidence.resume_quotes:
+                # 引用を表示（quotesを使用、後方互換性でresume_quotesも対応）
+                quotes_to_display = m.evidence.quotes if m.evidence.quotes else [
+                    type('Quote', (), {'text': q, 'source': QuoteSource.RESUME, 'source_id': None})()
+                    for q in (m.evidence.resume_quotes or [])
+                ]
+                
+                if quotes_to_display:
                     st.markdown("**職務経歴からの引用**:")
-                    quote_sources = m.evidence.quote_sources or ["resume"] * len(m.evidence.resume_quotes)
                     
-                    for i, quote in enumerate(m.evidence.resume_quotes):
+                    for quote_obj in quotes_to_display:
+                        # Quote構造体から情報を取得
+                        quote_text = quote_obj.text if hasattr(quote_obj, 'text') else quote_obj
+                        source = quote_obj.source if hasattr(quote_obj, 'source') else QuoteSource.RESUME
+                        source_id = getattr(quote_obj, 'source_id', None)
+                        
                         # 引用の出どころを表示
-                        source = quote_sources[i] if i < len(quote_sources) else "resume"
-                        source_label = "📄 職務経歴書" if source == "resume" else "🔍 実績メモ（RAG）"
+                        if source == QuoteSource.RESUME:
+                            source_label = "📄 [職務経歴書]"
+                        else:
+                            if source_id is not None:
+                                source_label = f"🔍 [実績DB #{source_id + 1}]"
+                            else:
+                                source_label = "🔍 [実績DB]"
                         
                         # 引用が実際に存在するか検証
-                        is_valid = verify_quote_in_text(quote, resume_text)
+                        is_valid = verify_quote_in_text(quote_text, resume_text)
                         if is_valid:
-                            st.markdown(f"> **{source_label}** {quote}")
+                            st.markdown(f"> **{source_label}** {quote_text}")
                         else:
                             # 警告表示：引用が見つからない場合
                             st.markdown(f"> **{source_label}** ⚠️ **引用要確認**")
-                            st.markdown(f"> {quote}")
+                            st.markdown(f"> {quote_text}")
 
                 st.markdown("**求人票からの引用**:")
                 st.markdown(f"> {m.requirement.job_quote}")

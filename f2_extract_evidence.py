@@ -15,7 +15,7 @@ from langchain_community.vectorstores import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pydantic import BaseModel, Field
 
-from models import Requirement, Evidence, F2Output, ConfidenceLevel
+from models import Requirement, Evidence, F2Output, ConfidenceLevel, Quote, QuoteSource
 
 # 環境変数読み込み
 load_dotenv()
@@ -123,68 +123,65 @@ def _structure_resume_text(
 
 def _annotate_quote_sources(
     evidence_list: List[Evidence],
-    rag_evidence: Dict[str, List[str]],
+    rag_evidence: Dict[str, List[Tuple[str, int]]],
     resume_text: str
 ) -> List[Evidence]:
     """
-    引用の出どころを記録（resume / rag）
+    引用の出どころを記録し、Quote構造体に変換
     
     Args:
         evidence_list: Evidenceリスト
-        rag_evidence: RAG検索結果（req_id -> 根拠候補リスト）
+        rag_evidence: RAG検索結果（req_id -> (テキスト, チャンクインデックス)のリスト）
         resume_text: 職務経歴書のテキスト
     
     Returns:
-        List[Evidence]: quote_sourcesが設定されたEvidenceリスト
+        List[Evidence]: quotesが設定されたEvidenceリスト
     """
     from utils import normalize_text
     
     annotated_list = []
     for ev in evidence_list:
-        quote_sources = []
+        quotes = []
         
-        for quote in ev.resume_quotes:
-            source = "resume"  # デフォルトは職務経歴書
-            
-            # RAG検索結果と照合
-            if ev.req_id in rag_evidence:
-                rag_candidates = rag_evidence[ev.req_id]
-                normalized_quote = normalize_text(quote)
+        # 既にquotesが設定されている場合はそのまま使用
+        if ev.quotes:
+            quotes = ev.quotes
+        # 後方互換性: resume_quotesからquotesを生成
+        elif ev.resume_quotes:
+            for i, quote_text in enumerate(ev.resume_quotes):
+                source = QuoteSource.RESUME  # デフォルトは職務経歴書
+                source_id = None
                 
-                for rag_candidate in rag_candidates:
-                    normalized_candidate = normalize_text(rag_candidate)
-                    # 引用がRAG候補に含まれているか確認（部分一致）
-                    if normalized_quote in normalized_candidate or normalized_candidate in normalized_quote:
-                        # さらに職務経歴書にも存在するか確認
-                        if normalize_text(quote) not in normalize_text(resume_text):
-                            # 職務経歴書に存在せず、RAG候補に存在する場合はRAG由来
-                            source = "rag"
+                # RAG検索結果と照合
+                if ev.req_id in rag_evidence:
+                    rag_candidates = rag_evidence[ev.req_id]
+                    normalized_quote = normalize_text(quote_text)
+                    
+                    for rag_text, rag_chunk_index in rag_candidates:
+                        normalized_candidate = normalize_text(rag_text)
+                        # 引用がRAG候補に含まれているか確認（部分一致）
+                        if normalized_quote in normalized_candidate or normalized_candidate in normalized_quote:
+                            # さらに職務経歴書にも存在するか確認
+                            if normalize_text(quote_text) not in normalize_text(resume_text):
+                                # 職務経歴書に存在せず、RAG候補に存在する場合はRAG由来
+                                source = QuoteSource.RAG
+                                source_id = rag_chunk_index if rag_chunk_index >= 0 else None
+                                break
+                            # 両方に存在する場合は職務経歴書を優先
                             break
-                        # 両方に存在する場合は職務経歴書を優先
-                        break
-            
-            quote_sources.append(source)
+                
+                quotes.append(Quote(text=quote_text, source=source, source_id=source_id))
         
-        # quote_sourcesが空でない場合のみ設定
-        if quote_sources:
-            annotated_ev = Evidence(
-                req_id=ev.req_id,
-                resume_quotes=ev.resume_quotes,
-                quote_sources=quote_sources,
-                confidence=ev.confidence,
-                confidence_level=ev.confidence_level,
-                reason=ev.reason
-            )
-        else:
-            # quote_sourcesが空の場合はNone
-            annotated_ev = Evidence(
-                req_id=ev.req_id,
-                resume_quotes=ev.resume_quotes,
-                quote_sources=None,
-                confidence=ev.confidence,
-                confidence_level=ev.confidence_level,
-                reason=ev.reason
-            )
+        # Evidenceを更新（quotesを設定）
+        annotated_ev = Evidence(
+            req_id=ev.req_id,
+            quotes=quotes,
+            resume_quotes=ev.resume_quotes,  # 後方互換性のため残す
+            quote_sources=ev.quote_sources,  # 後方互換性のため残す
+            confidence=ev.confidence,
+            confidence_level=ev.confidence_level,
+            reason=ev.reason
+        )
         
         annotated_list.append(annotated_ev)
     
@@ -195,7 +192,7 @@ def _retrieve_rag_evidence(
     achievement_notes: str,
     requirements: List[Requirement],
     top_k: int = 3
-) -> Tuple[Dict[str, List[str]], Optional[str]]:
+) -> Tuple[Dict[str, List[Tuple[str, int]]], Optional[str]]:
     """
     実績メモからRAG検索で根拠候補を取得
     
@@ -205,7 +202,8 @@ def _retrieve_rag_evidence(
         top_k: 各要件に対して取得する候補数
     
     Returns:
-        Tuple[Dict[str, List[str]], Optional[str]]: (req_id -> 根拠候補リストの辞書, エラーメッセージ)
+        Tuple[Dict[str, List[Tuple[str, int]]], Optional[str]]: 
+            (req_id -> (テキスト, チャンクインデックス)のリストの辞書, エラーメッセージ)
     """
     if not achievement_notes or not achievement_notes.strip():
         return {}, None
@@ -262,7 +260,17 @@ def _retrieve_rag_evidence(
             query = req.description
             try:
                 docs = vectorstore.similarity_search(query, k=top_k)
-                rag_evidence[req.req_id] = [doc.page_content for doc in docs]
+                # チャンクのインデックスを取得（source_idとして使用）
+                rag_results = []
+                for doc in docs:
+                    # チャンクのインデックスを取得（textsリスト内での位置）
+                    try:
+                        chunk_index = texts.index(doc.page_content)
+                    except ValueError:
+                        # 見つからない場合は-1（不明）
+                        chunk_index = -1
+                    rag_results.append((doc.page_content, chunk_index))
+                rag_evidence[req.req_id] = rag_results
             except Exception as e:
                 print(f"⚠️  RAG検索エラー（req_id={req.req_id}）: {e}")
                 rag_evidence[req.req_id] = []
@@ -379,8 +387,10 @@ def extract_evidence(
                 if evidence_list:
                     req_desc = next((r.description for r in requirements if r.req_id == req_id), req_id)
                     rag_notes_str += f"\n[{req_id}] {req_desc}:\n"
-                    for i, evidence in enumerate(evidence_list, 1):
-                        rag_notes_str += f"  {i}. {evidence[:200]}...\n"
+                    for i, evidence_tuple in enumerate(evidence_list, 1):
+                        # evidence_tupleは (text, chunk_index) の形式
+                        evidence_text = evidence_tuple[0] if isinstance(evidence_tuple, tuple) else evidence_tuple
+                        rag_notes_str += f"  {i}. {evidence_text[:200]}...\n"
         
         prompt_template = PromptTemplate(
             template="""あなたは職務経歴書の分析専門家です。以下の職務経歴書から、各要件に対する根拠を抽出してください。
@@ -443,7 +453,7 @@ def extract_evidence(
         evidence_list = _verify_quotes(evidence_list, resume_text)
         
         # 無効な引用がある場合、1回だけ再抽出を試みる（コスト増えすぎない範囲で）
-        invalid_evidences = [ev for ev in evidence_list if len(ev.resume_quotes) == 0 and ev.confidence == 0.0]
+        invalid_evidences = [ev for ev in evidence_list if len(ev.quotes) == 0 and ev.confidence == 0.0]
         if invalid_evidences and len(invalid_evidences) <= 3:  # 最大3件まで再抽出
             try:
                 # 無効な要件のみを再抽出
@@ -463,8 +473,12 @@ def extract_evidence(
                                 # 再抽出結果を検証
                                 verified_retry = _verify_single_evidence(retry_ev, resume_text)
                                 # 再抽出の場合は全て"resume"として記録（RAG検索結果は使わない）
-                                if verified_retry.resume_quotes:
-                                    verified_retry.quote_sources = ["resume"] * len(verified_retry.resume_quotes)
+                                if verified_retry.quotes:
+                                    # quotesを全てresumeに更新
+                                    verified_retry.quotes = [
+                                        Quote(text=q.text, source=QuoteSource.RESUME, source_id=None)
+                                        for q in verified_retry.quotes
+                                    ]
                                 evidence_list[i] = verified_retry
                                 break
             except Exception as retry_error:
@@ -488,16 +502,25 @@ def _verify_quotes(
     resume_text: str
 ) -> List[Evidence]:
     """
-    resume_quotesが実際にresume_text内に存在するか検証（強化版）
+    quotesが実際にresume_text内に存在するか検証（強化版）
     存在しない引用はconfidenceを下げ、reasonに追記
     """
+    from utils import verify_quote_in_text
+    
     verified_list = []
 
     for ev in evidence_list:
+        # 後方互換性: resume_quotesからquotesを生成
+        quotes_to_check = ev.quotes if ev.quotes else [
+            Quote(text=q, source=QuoteSource.RESUME, source_id=None)
+            for q in (ev.resume_quotes or [])
+        ]
+        
         invalid_quotes = []
         valid_quotes = []
 
-        for quote in ev.resume_quotes:
+        for quote_obj in quotes_to_check:
+            quote = quote_obj.text if isinstance(quote_obj, Quote) else quote_obj
             quote_clean = quote.strip()
             if not quote_clean:
                 continue
@@ -520,9 +543,9 @@ def _verify_quotes(
                         found = True
 
             if found:
-                valid_quotes.append(quote)
+                valid_quotes.append(quote_obj)
             else:
-                invalid_quotes.append(quote)
+                invalid_quotes.append(quote_obj)
 
         # 無効な引用がある場合
         if invalid_quotes:
@@ -546,18 +569,14 @@ def _verify_quotes(
             new_reason = ev.reason + f"\n⚠️ 引用検証失敗: {len(invalid_quotes)}件の引用が原文に存在しないため要確認/再抽出"
 
             # 新しいEvidenceを作成（有効な引用のみ）
-            # quote_sourcesも更新（有効な引用に対応する部分のみ）
-            updated_sources = None
-            if ev.quote_sources and len(ev.quote_sources) == len(ev.resume_quotes):
-                updated_sources = [
-                    ev.quote_sources[i] for i, quote in enumerate(ev.resume_quotes)
-                    if quote in valid_quotes
-                ]
+            # quotesを更新（有効な引用のみ）
+            valid_quote_objects = valid_quotes
             
             verified_ev = Evidence(
                 req_id=ev.req_id,
-                resume_quotes=valid_quotes,
-                quote_sources=updated_sources if updated_sources else None,
+                quotes=valid_quote_objects,
+                resume_quotes=[q.text if isinstance(q, Quote) else q for q in valid_quote_objects],  # 後方互換性
+                quote_sources=[q.source.value if isinstance(q, Quote) else "resume" for q in valid_quote_objects],  # 後方互換性
                 confidence=new_confidence,
                 confidence_level=new_level,
                 reason=new_reason
@@ -622,10 +641,17 @@ def _verify_single_evidence(ev: Evidence, resume_text: str) -> Evidence:
     Returns:
         Evidence: 検証済みのEvidence
     """
+    # 後方互換性: resume_quotesからquotesを生成
+    quotes_to_check = ev.quotes if ev.quotes else [
+        Quote(text=q, source=QuoteSource.RESUME, source_id=None)
+        for q in (ev.resume_quotes or [])
+    ]
+    
     invalid_quotes = []
     valid_quotes = []
 
-    for quote in ev.resume_quotes:
+    for quote_obj in quotes_to_check:
+        quote = quote_obj.text if isinstance(quote_obj, Quote) else quote_obj
         quote_clean = quote.strip()
         if not quote_clean:
             continue
@@ -643,9 +669,9 @@ def _verify_single_evidence(ev: Evidence, resume_text: str) -> Evidence:
                     found = True
 
         if found:
-            valid_quotes.append(quote)
+            valid_quotes.append(quote_obj)
         else:
-            invalid_quotes.append(quote)
+            invalid_quotes.append(quote_obj)
 
     if invalid_quotes:
         if len(valid_quotes) == 0:
@@ -663,18 +689,14 @@ def _verify_single_evidence(ev: Evidence, resume_text: str) -> Evidence:
 
         new_reason = ev.reason + f"\n⚠️ 引用検証失敗: {len(invalid_quotes)}件の引用が原文に存在しないため要確認/再抽出"
         
-        # quote_sourcesも更新（有効な引用に対応する部分のみ）
-        updated_sources = None
-        if ev.quote_sources and len(ev.quote_sources) == len(ev.resume_quotes):
-            updated_sources = [
-                ev.quote_sources[i] for i, quote in enumerate(ev.resume_quotes)
-                if quote in valid_quotes
-            ]
+        # quotesを更新（有効な引用のみ）
+        valid_quote_objects = valid_quotes
         
         return Evidence(
             req_id=ev.req_id,
-            resume_quotes=valid_quotes,
-            quote_sources=updated_sources if updated_sources else None,
+            quotes=valid_quote_objects,
+            resume_quotes=[q.text if isinstance(q, Quote) else q for q in valid_quote_objects],  # 後方互換性
+            quote_sources=[q.source.value if isinstance(q, Quote) else "resume" for q in valid_quote_objects],  # 後方互換性
             confidence=new_confidence,
             confidence_level=new_level,
             reason=new_reason
@@ -757,12 +779,16 @@ def _fallback_extract(
         reason = f"キーワードマッチング（{len(found_quotes)}件の関連記述を発見）" if found_quotes else "該当する記述が見つかりませんでした"
 
         # fallbackの場合は全て"resume"として記録
-        quote_sources = ["resume"] * len(found_quotes[:3]) if found_quotes else None
+        quotes = [
+            Quote(text=q, source=QuoteSource.RESUME, source_id=None)
+            for q in found_quotes[:3]
+        ] if found_quotes else []
         
         evidence_list.append(Evidence(
             req_id=req.req_id,
-            resume_quotes=found_quotes[:3],  # 最大3件
-            quote_sources=quote_sources,
+            quotes=quotes,
+            resume_quotes=found_quotes[:3],  # 後方互換性: 最大3件
+            quote_sources=["resume"] * len(found_quotes[:3]) if found_quotes else None,  # 後方互換性
             confidence=confidence,
             confidence_level=level,
             reason=reason

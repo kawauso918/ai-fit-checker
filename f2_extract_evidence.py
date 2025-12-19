@@ -4,7 +4,7 @@ PydanticOutputParser + 原文引用検証で安定化 + セクション分解で
 """
 import os
 import re
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Tuple
 from dotenv import load_dotenv
 
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -121,11 +121,81 @@ def _structure_resume_text(
         return None
 
 
+def _annotate_quote_sources(
+    evidence_list: List[Evidence],
+    rag_evidence: Dict[str, List[str]],
+    resume_text: str
+) -> List[Evidence]:
+    """
+    引用の出どころを記録（resume / rag）
+    
+    Args:
+        evidence_list: Evidenceリスト
+        rag_evidence: RAG検索結果（req_id -> 根拠候補リスト）
+        resume_text: 職務経歴書のテキスト
+    
+    Returns:
+        List[Evidence]: quote_sourcesが設定されたEvidenceリスト
+    """
+    from utils import normalize_text
+    
+    annotated_list = []
+    for ev in evidence_list:
+        quote_sources = []
+        
+        for quote in ev.resume_quotes:
+            source = "resume"  # デフォルトは職務経歴書
+            
+            # RAG検索結果と照合
+            if ev.req_id in rag_evidence:
+                rag_candidates = rag_evidence[ev.req_id]
+                normalized_quote = normalize_text(quote)
+                
+                for rag_candidate in rag_candidates:
+                    normalized_candidate = normalize_text(rag_candidate)
+                    # 引用がRAG候補に含まれているか確認（部分一致）
+                    if normalized_quote in normalized_candidate or normalized_candidate in normalized_quote:
+                        # さらに職務経歴書にも存在するか確認
+                        if normalize_text(quote) not in normalize_text(resume_text):
+                            # 職務経歴書に存在せず、RAG候補に存在する場合はRAG由来
+                            source = "rag"
+                            break
+                        # 両方に存在する場合は職務経歴書を優先
+                        break
+            
+            quote_sources.append(source)
+        
+        # quote_sourcesが空でない場合のみ設定
+        if quote_sources:
+            annotated_ev = Evidence(
+                req_id=ev.req_id,
+                resume_quotes=ev.resume_quotes,
+                quote_sources=quote_sources,
+                confidence=ev.confidence,
+                confidence_level=ev.confidence_level,
+                reason=ev.reason
+            )
+        else:
+            # quote_sourcesが空の場合はNone
+            annotated_ev = Evidence(
+                req_id=ev.req_id,
+                resume_quotes=ev.resume_quotes,
+                quote_sources=None,
+                confidence=ev.confidence,
+                confidence_level=ev.confidence_level,
+                reason=ev.reason
+            )
+        
+        annotated_list.append(annotated_ev)
+    
+    return annotated_list
+
+
 def _retrieve_rag_evidence(
     achievement_notes: str,
     requirements: List[Requirement],
     top_k: int = 3
-) -> Dict[str, List[str]]:
+) -> Tuple[Dict[str, List[str]], Optional[str]]:
     """
     実績メモからRAG検索で根拠候補を取得
     
@@ -135,10 +205,26 @@ def _retrieve_rag_evidence(
         top_k: 各要件に対して取得する候補数
     
     Returns:
-        Dict[str, List[str]]: req_id -> 根拠候補リストの辞書
+        Tuple[Dict[str, List[str]], Optional[str]]: (req_id -> 根拠候補リストの辞書, エラーメッセージ)
     """
     if not achievement_notes or not achievement_notes.strip():
-        return {}
+        return {}, None
+    
+    # テキスト長チェック（最大10000文字）
+    MAX_TEXT_LENGTH = 10000
+    if len(achievement_notes) > MAX_TEXT_LENGTH:
+        achievement_notes = achievement_notes[:MAX_TEXT_LENGTH]
+        error_msg = f"実績メモが長すぎるため、最初の{MAX_TEXT_LENGTH}文字のみを使用します"
+        print(f"⚠️  {error_msg}")
+    else:
+        error_msg = None
+    
+    # OpenAI APIキーの確認
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        error_msg = "OPENAI_API_KEYが設定されていません。RAG検索をスキップします"
+        print(f"⚠️  {error_msg}")
+        return {}, error_msg
     
     try:
         # テキストをチャンクに分割
@@ -150,17 +236,24 @@ def _retrieve_rag_evidence(
         texts = text_splitter.split_text(achievement_notes)
         
         if not texts:
-            return {}
+            error_msg = "実績メモから有効なチャンクを生成できませんでした"
+            print(f"⚠️  {error_msg}")
+            return {}, error_msg
         
         # ベクトルストアを作成（インメモリ、一時的なコレクション名）
-        embeddings = OpenAIEmbeddings(api_key=os.getenv("OPENAI_API_KEY"))
-        import uuid
-        collection_name = f"achievement_notes_{uuid.uuid4().hex[:8]}"
-        vectorstore = Chroma.from_texts(
-            texts=texts,
-            embedding=embeddings,
-            collection_name=collection_name
-        )
+        try:
+            embeddings = OpenAIEmbeddings(api_key=api_key)
+            import uuid
+            collection_name = f"achievement_notes_{uuid.uuid4().hex[:8]}"
+            vectorstore = Chroma.from_texts(
+                texts=texts,
+                embedding=embeddings,
+                collection_name=collection_name
+            )
+        except Exception as init_error:
+            error_msg = f"ベクトルストアの初期化に失敗しました: {init_error}"
+            print(f"⚠️  {error_msg}")
+            return {}, error_msg
         
         # 各要件に対して関連箇所を検索
         rag_evidence = {}
@@ -180,11 +273,12 @@ def _retrieve_rag_evidence(
         except:
             pass
         
-        return rag_evidence
+        return rag_evidence, error_msg
         
     except Exception as e:
-        print(f"⚠️  RAG検索に失敗: {e}")
-        return {}
+        error_msg = f"RAG検索に失敗: {e}"
+        print(f"⚠️  {error_msg}")
+        return {}, error_msg
 
 
 def extract_evidence(
@@ -218,12 +312,12 @@ def extract_evidence(
     
     # RAG検索で実績メモから根拠候補を取得
     rag_evidence = {}
+    rag_error_message = None
     if achievement_notes and achievement_notes.strip():
-        try:
-            rag_evidence = _retrieve_rag_evidence(achievement_notes, requirements)
-        except Exception as e:
-            print(f"⚠️  RAG検索をスキップ: {e}")
-            rag_evidence = {}
+        rag_evidence, rag_error_message = _retrieve_rag_evidence(achievement_notes, requirements)
+        # エラーメッセージをoptionsに保存（UI表示用）
+        if rag_error_message:
+            options["rag_error_message"] = rag_error_message
 
     # 職務経歴書をセクション分解（失敗時は従来通り）
     structured_resume = None
@@ -326,6 +420,10 @@ def extract_evidence(
                 output = llm.invoke(prompt)
                 result = parser.parse(output.content)
                 evidence_list = result.evidence_list
+                
+                # 引用の出どころを記録（RAG検索結果と照合）
+                evidence_list = _annotate_quote_sources(evidence_list, rag_evidence, resume_text)
+                
                 break
             except Exception as parse_error:
                 if attempt == max_retries - 1:
@@ -337,6 +435,8 @@ def extract_evidence(
         print(f"⚠️  LLM抽出に失敗、fallbackを使用: {e}")
         # Fallback: ルールベース抽出
         evidence_list = _fallback_extract(resume_text, requirements)
+        # 引用の出どころを記録（fallbackの場合は全て"resume"）
+        evidence_list = _annotate_quote_sources(evidence_list, {}, resume_text)
 
     # 引用検証
     if verify_quotes:
@@ -362,11 +462,17 @@ def extract_evidence(
                             if ev.req_id == retry_ev.req_id:
                                 # 再抽出結果を検証
                                 verified_retry = _verify_single_evidence(retry_ev, resume_text)
+                                # 再抽出の場合は全て"resume"として記録（RAG検索結果は使わない）
+                                if verified_retry.resume_quotes:
+                                    verified_retry.quote_sources = ["resume"] * len(verified_retry.resume_quotes)
                                 evidence_list[i] = verified_retry
                                 break
             except Exception as retry_error:
                 # 再抽出失敗は無視（元の結果を使用）
                 print(f"⚠️  再抽出に失敗（無視）: {retry_error}")
+        
+        # 引用検証後、再度アノテーションを適用（引用が削除された場合にquote_sourcesも更新）
+        evidence_list = _annotate_quote_sources(evidence_list, rag_evidence, resume_text)
 
     # dict[req_id -> Evidence] に変換
     evidence_map = {ev.req_id: ev for ev in evidence_list}
@@ -440,9 +546,18 @@ def _verify_quotes(
             new_reason = ev.reason + f"\n⚠️ 引用検証失敗: {len(invalid_quotes)}件の引用が原文に存在しないため要確認/再抽出"
 
             # 新しいEvidenceを作成（有効な引用のみ）
+            # quote_sourcesも更新（有効な引用に対応する部分のみ）
+            updated_sources = None
+            if ev.quote_sources and len(ev.quote_sources) == len(ev.resume_quotes):
+                updated_sources = [
+                    ev.quote_sources[i] for i, quote in enumerate(ev.resume_quotes)
+                    if quote in valid_quotes
+                ]
+            
             verified_ev = Evidence(
                 req_id=ev.req_id,
                 resume_quotes=valid_quotes,
+                quote_sources=updated_sources if updated_sources else None,
                 confidence=new_confidence,
                 confidence_level=new_level,
                 reason=new_reason
@@ -548,9 +663,18 @@ def _verify_single_evidence(ev: Evidence, resume_text: str) -> Evidence:
 
         new_reason = ev.reason + f"\n⚠️ 引用検証失敗: {len(invalid_quotes)}件の引用が原文に存在しないため要確認/再抽出"
         
+        # quote_sourcesも更新（有効な引用に対応する部分のみ）
+        updated_sources = None
+        if ev.quote_sources and len(ev.quote_sources) == len(ev.resume_quotes):
+            updated_sources = [
+                ev.quote_sources[i] for i, quote in enumerate(ev.resume_quotes)
+                if quote in valid_quotes
+            ]
+        
         return Evidence(
             req_id=ev.req_id,
             resume_quotes=valid_quotes,
+            quote_sources=updated_sources if updated_sources else None,
             confidence=new_confidence,
             confidence_level=new_level,
             reason=new_reason
@@ -573,6 +697,7 @@ def _ensure_all_requirements(
             evidence_map[req.req_id] = Evidence(
                 req_id=req.req_id,
                 resume_quotes=[],
+                quote_sources=None,
                 confidence=0.0,
                 confidence_level=ConfidenceLevel.NONE,
                 reason="職務経歴書から該当する経験・スキルが見つかりませんでした"
@@ -631,9 +756,13 @@ def _fallback_extract(
 
         reason = f"キーワードマッチング（{len(found_quotes)}件の関連記述を発見）" if found_quotes else "該当する記述が見つかりませんでした"
 
+        # fallbackの場合は全て"resume"として記録
+        quote_sources = ["resume"] * len(found_quotes[:3]) if found_quotes else None
+        
         evidence_list.append(Evidence(
             req_id=req.req_id,
             resume_quotes=found_quotes[:3],  # 最大3件
+            quote_sources=quote_sources,
             confidence=confidence,
             confidence_level=level,
             reason=reason

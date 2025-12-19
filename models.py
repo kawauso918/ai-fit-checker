@@ -53,6 +53,10 @@ class Evidence(BaseModel):
         default_factory=list,
         description="職務経歴書からの原文引用（改変禁止）。複数可。空リストはマッチなし。"
     )
+    quote_sources: Optional[List[str]] = Field(
+        default=None,
+        description="各引用の出どころ（'resume'=職務経歴書, 'rag'=実績メモRAG）。resume_quotesと同じ順序。"
+    )
     confidence: float = Field(..., ge=0.0, le=1.0, description="マッチ度（0.0〜1.0）")
     confidence_level: ConfidenceLevel = Field(..., description="信頼度レベル")
     reason: str = Field(..., description="判定理由（なぜマッチ/しないか）")

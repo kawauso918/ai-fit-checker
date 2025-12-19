@@ -17,6 +17,114 @@ from utils import verify_quote_in_text
 from pdf_export import generate_pdf
 
 
+def run_analysis_core(
+    job_text: str,
+    resume_text: str,
+    achievement_notes: str = None,
+    emphasis_axes: list = None,
+    options: dict = None
+) -> dict:
+    """
+    分析処理のコア関数（Streamlit UIに依存しない）
+    
+    Args:
+        job_text: 求人票のテキスト
+        resume_text: 職務経歴書のテキスト
+        achievement_notes: 実績メモ（オプション）
+        emphasis_axes: 強調軸のリスト（オプション）
+        options: オプション辞書（llm_provider, model_name, temperature等）
+    
+    Returns:
+        dict: 分析結果の辞書
+            - timestamp: 実行日時
+            - execution_time: 実行時間（秒）
+            - requirements: 抽出された要件リスト
+            - evidence_map: 根拠マップ
+            - score_total: 総合スコア
+            - score_must: Mustスコア
+            - score_want: Wantスコア
+            - matched: マッチした要件リスト
+            - gaps: ギャップのある要件リスト
+            - summary: サマリ
+            - improvements: 改善案
+            - interview_qas: 面接Q&A
+            - quality_evaluation: 品質評価（Noneの可能性あり）
+            - rag_error_message: RAGエラーメッセージ（Noneの可能性あり）
+    """
+    import time
+    from datetime import datetime
+    
+    # デフォルト値の設定
+    if options is None:
+        options = {}
+    if emphasis_axes is None:
+        emphasis_axes = []
+    
+    # 実行時間計測開始
+    start_time = time.time()
+    
+    # F1: 求人要件抽出
+    requirements = extract_requirements(job_text, options)
+    
+    # F2: 根拠抽出
+    options_with_notes = options.copy()
+    options_with_notes["achievement_notes"] = achievement_notes if achievement_notes else None
+    evidence_map = extract_evidence(resume_text, requirements, options_with_notes)
+    
+    # RAGエラーメッセージを取得
+    rag_error_message = options_with_notes.get("rag_error_message")
+    
+    # F3: スコア計算
+    score_total, score_must, score_want, matched, gaps, summary = calculate_scores(
+        requirements, evidence_map, emphasis_axes=emphasis_axes
+    )
+    
+    # F4: 改善案生成
+    improvements = generate_improvements(
+        job_text, resume_text, requirements, matched, gaps, options
+    )
+    
+    # F5: 面接想定Q&A生成
+    interview_qas = generate_interview_qa(
+        job_text, resume_text, matched, gaps, summary, options
+    )
+    
+    # F6: 品質評価（失敗時はスキップ）
+    quality_evaluation = None
+    try:
+        quality_evaluation = evaluate_quality(
+            job_text, resume_text, matched, gaps, improvements, interview_qas, options
+        )
+    except Exception:
+        # エラー時はスキップ（Noneのまま）
+        pass
+    
+    # 実行時間計測終了
+    end_time = time.time()
+    execution_time = end_time - start_time
+    
+    # 結果を辞書にまとめる
+    result = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "execution_time": execution_time,
+        "resume_text": resume_text,
+        "requirements": requirements,
+        "evidence_map": evidence_map,
+        "score_total": score_total,
+        "score_must": score_must,
+        "score_want": score_want,
+        "matched": matched,
+        "gaps": gaps,
+        "summary": summary,
+        "improvements": improvements,
+        "interview_qas": interview_qas,
+        "quality_evaluation": quality_evaluation,
+        "rag_error_message": rag_error_message,
+    }
+    
+    return result
+
+
 def main():
     # ページ設定
     st.set_page_config(
@@ -252,6 +360,13 @@ def main():
                         options_with_notes = options.copy()
                         options_with_notes["achievement_notes"] = achievement_notes if achievement_notes else None
                         evidence_map = extract_evidence(resume_text, requirements, options_with_notes)
+                        
+                        # RAG状態を表示
+                        rag_error = options_with_notes.get("rag_error_message")
+                        if rag_error:
+                            st.warning(f"⚠️ RAG検索: {rag_error}")
+                        elif achievement_notes and achievement_notes.strip():
+                            st.info("ℹ️ RAG検索が有効です（実績メモから根拠候補を取得）")
                     
                     # F3: スコア計算
                     with st.spinner(f"⏳ 求人{idx} - F3: スコアを計算中..."):
@@ -317,54 +432,32 @@ def main():
                 st.balloons()
             else:
                 # 通常モード：1つの求人票に対して実行
-                # F1: 求人要件抽出
-                with st.spinner("⏳ F1: 求人要件を抽出中..."):
-                    requirements = extract_requirements(job_text, options)
-                    st.success(f"✅ F1完了: {len(requirements)}件の要件を抽出")
-
-                # F2: 根拠抽出
-                with st.spinner("⏳ F2: 職務経歴から根拠を抽出中..."):
-                    # 実績メモをoptionsに追加
-                    options_with_notes = options.copy()
-                    options_with_notes["achievement_notes"] = achievement_notes if achievement_notes else None
-                    evidence_map = extract_evidence(resume_text, requirements, options_with_notes)
-                    st.success(f"✅ F2完了: {len(evidence_map)}件の根拠を分析")
-
-                # F3: スコア計算
-                with st.spinner("⏳ F3: スコアを計算中..."):
-                    score_total, score_must, score_want, matched, gaps, summary = calculate_scores(
-                        requirements, evidence_map, emphasis_axes=emphasis_axes_list
+                with st.spinner("⏳ 分析を実行中..."):
+                    # コア関数を呼び出し
+                    result = run_analysis_core(
+                        job_text=job_text,
+                        resume_text=resume_text,
+                        achievement_notes=achievement_notes,
+                        emphasis_axes=emphasis_axes_list,
+                        options=options
                     )
-                    st.success(f"✅ F3完了: 総合スコア {score_total}点")
-
-                # F4: 改善案生成
-                with st.spinner("⏳ F4: 改善案を生成中..."):
-                    improvements = generate_improvements(
-                        job_text, resume_text, requirements, matched, gaps, options
-                    )
-                    st.success(f"✅ F4完了: {len(improvements.action_items)}件の行動計画を生成")
-
-                # F5: 面接想定Q&A生成
-                with st.spinner("⏳ F5: 面接想定Q&Aを生成中..."):
-                    interview_qas = generate_interview_qa(
-                        job_text, resume_text, matched, gaps, summary, options
-                    )
-                    st.success(f"✅ F5完了: {len(interview_qas.qa_list)}件のQ&Aを生成")
-
-                # F6: 品質評価（失敗時はスキップ）
-                quality_evaluation = None
-                try:
-                    with st.spinner("⏳ F6: 品質評価を実行中..."):
-                        quality_evaluation = evaluate_quality(
-                            job_text, resume_text, matched, gaps, improvements, interview_qas, options
-                        )
-                        st.success(f"✅ F6完了: 総合品質スコア {quality_evaluation.overall_score:.1f}点")
-                except Exception as e:
-                    st.warning(f"⚠️ F6（品質評価）をスキップしました: {e}")
-
-                # 実行時間計測終了
-                end_time = time.time()
-                execution_time = end_time - start_time
+                    
+                    # RAG状態を表示
+                    if result.get("rag_error_message"):
+                        st.warning(f"⚠️ RAG検索: {result['rag_error_message']}")
+                    elif achievement_notes and achievement_notes.strip():
+                        st.info("ℹ️ RAG検索が有効です（実績メモから根拠候補を取得）")
+                    
+                    # 各ステップの成功メッセージを表示
+                    st.success(f"✅ F1完了: {len(result['requirements'])}件の要件を抽出")
+                    st.success(f"✅ F2完了: {len(result['evidence_map'])}件の根拠を分析")
+                    st.success(f"✅ F3完了: 総合スコア {result['score_total']}点")
+                    st.success(f"✅ F4完了: {len(result['improvements'].action_items)}件の行動計画を生成")
+                    st.success(f"✅ F5完了: {len(result['interview_qas'].qa_list)}件のQ&Aを生成")
+                    if result.get('quality_evaluation'):
+                        st.success(f"✅ F6完了: 総合品質スコア {result['quality_evaluation'].overall_score:.1f}点")
+                    else:
+                        st.info("ℹ️ F6（品質評価）をスキップしました")
 
                 # 結果をsession_stateに保存
                 st.session_state.result = {
@@ -564,14 +657,20 @@ def _render_single_result(result_dict: dict, resume_text: str):
 
                 if m.evidence.resume_quotes:
                     st.markdown("**職務経歴からの引用**:")
-                    for quote in m.evidence.resume_quotes:
+                    quote_sources = m.evidence.quote_sources or ["resume"] * len(m.evidence.resume_quotes)
+                    
+                    for i, quote in enumerate(m.evidence.resume_quotes):
+                        # 引用の出どころを表示
+                        source = quote_sources[i] if i < len(quote_sources) else "resume"
+                        source_label = "📄 職務経歴書" if source == "resume" else "🔍 実績メモ（RAG）"
+                        
                         # 引用が実際に存在するか検証
                         is_valid = verify_quote_in_text(quote, resume_text)
                         if is_valid:
-                            st.markdown(f"> {quote}")
+                            st.markdown(f"> **{source_label}** {quote}")
                         else:
                             # 警告表示：引用が見つからない場合
-                            st.markdown("> ⚠️ **引用要確認**")
+                            st.markdown(f"> **{source_label}** ⚠️ **引用要確認**")
                             st.markdown(f"> {quote}")
 
                 st.markdown("**求人票からの引用**:")

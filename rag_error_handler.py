@@ -147,3 +147,5 @@ def get_rag_status(
     else:
         return "disabled", "RAG検索は実行されましたが、根拠候補が見つかりませんでした"
 
+
+

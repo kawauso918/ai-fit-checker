@@ -183,3 +183,5 @@ python scripts/smoke_test.py
 
 詳細は `COMMIT_PLAN.md` を参照してください。
 
+
+

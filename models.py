@@ -28,6 +28,13 @@ class QuoteSource(str, Enum):
     RAG = "rag"  # 実績メモ（RAG検索）
 
 
+class MatchLevel(str, Enum):
+    """マッチレベル（要件と根拠の一致度）"""
+    MATCH = "match"      # 完全一致（confidence >= 0.7）
+    PARTIAL = "partial"  # 部分一致（0.4 <= confidence < 0.7）
+    GAP = "gap"          # ギャップ（confidence < 0.4 または引用なし）
+
+
 class Quote(BaseModel):
     """引用情報"""
     text: str = Field(..., description="引用テキスト")
@@ -255,3 +262,23 @@ class AnalysisResult(BaseModel):
             RequirementType: lambda v: v.value,
             ConfidenceLevel: lambda v: v.value,
         }
+
+
+# ==================== F7: Judge評価（3観点） ====================
+class JudgeScore(BaseModel):
+    """Judge評価の3観点スコア"""
+    convincing: float = Field(..., ge=0.0, le=100.0, description="納得感（0-100）")
+    grounding: float = Field(..., ge=0.0, le=100.0, description="根拠の妥当性（0-100）")
+    no_exaggeration: float = Field(..., ge=0.0, le=100.0, description="誇張抑制（0-100）")
+
+
+class JudgeEvaluation(BaseModel):
+    """Judge評価結果"""
+    scores: JudgeScore = Field(..., description="3観点のスコア")
+    issues: List[str] = Field(..., description="問題点リスト")
+    fix_suggestions: List[str] = Field(..., description="改善提案リスト")
+
+
+class F7Output(BaseModel):
+    """F7の出力形式"""
+    judge_evaluation: JudgeEvaluation = Field(..., description="Judge評価結果")

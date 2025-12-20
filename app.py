@@ -12,10 +12,13 @@ from f3_score import calculate_scores
 from f4_generate_improvements import generate_improvements
 from f5_generate_interview_qa import generate_interview_qa
 from f6_quality_evaluation import evaluate_quality
+from f7_judge_evaluation import evaluate_with_judge
 from models import RequirementType, ConfidenceLevel, QuoteSource
 from utils import verify_quote_in_text
 from pdf_export import generate_pdf
 from rag_error_handler import validate_rag_inputs, get_rag_status
+from input_validator import validate_inputs, validate_requirements_extracted
+from ui_components import render_requirements_by_category
 import os
 
 
@@ -97,6 +100,12 @@ def run_analysis_core(
         # F1: 求人要件抽出
         requirements = extract_requirements(job_text, options)
         
+        # 要件抽出結果の検証
+        is_valid, error_message = validate_requirements_extracted(requirements)
+        if not is_valid:
+            # エラーを返すために例外を発生
+            raise ValueError(f"要件抽出に失敗しました: {error_message}")
+        
         # F2: 根拠抽出
         options_with_notes = options.copy()
         options_with_notes["achievement_notes"] = achievement_notes if achievement_notes else None
@@ -131,6 +140,20 @@ def run_analysis_core(
             # エラー時はスキップ（Noneのまま）
             pass
         
+        # F7: Judge評価（失敗時はスキップ）
+        judge_evaluation = None
+        try:
+            judge_evaluation = evaluate_with_judge(
+                job_text, resume_text, matched, gaps, improvements, interview_qas, options
+            )
+        except Exception:
+            # エラー時はスキップ（Noneのまま）
+            pass
+        
+        # 実行時間計測終了
+        end_time = time.time()
+        execution_time = end_time - start_time
+        
         # 実行時間計測終了
         end_time = time.time()
         execution_time = end_time - start_time
@@ -151,6 +174,7 @@ def run_analysis_core(
             "improvements": improvements,
             "interview_qas": interview_qas,
             "quality_evaluation": quality_evaluation,
+            "judge_evaluation": judge_evaluation,
             "rag_error_message": rag_error_message,
             "rag_warning_message": rag_warning_message,
         }
@@ -370,6 +394,14 @@ def main():
                 st.error("❌ 求人票を入力してください。")
                 return
             job_texts = [job_text]
+        
+        # 入力検証（求人票/職務経歴書の長さチェック）
+        for idx, job_text_item in enumerate(job_texts, 1):
+            is_valid, error_message = validate_inputs(job_text_item, resume_text)
+            if not is_valid:
+                st.error(f"❌ 入力検証エラー（求人{idx if compare_mode else ''}）:\n\n{error_message}")
+                st.stop()
+                return
 
         # 強調軸をリストに変換（カンマ区切り対応）
         emphasis_axes_list = []
@@ -402,6 +434,13 @@ def main():
                     # F1: 求人要件抽出
                     with st.spinner(f"⏳ 求人{idx} - F1: 求人要件を抽出中..."):
                         requirements = extract_requirements(job_text_item, options)
+                    
+                    # 要件抽出結果の検証
+                    is_valid, error_message = validate_requirements_extracted(requirements)
+                    if not is_valid:
+                        st.error(f"❌ 求人{idx}の要件抽出に失敗しました:\n\n{error_message}")
+                        st.stop()
+                        return
                     
                     # F2: 根拠抽出
                     with st.spinner(f"⏳ 求人{idx} - F2: 職務経歴から根拠を抽出中..."):
@@ -733,87 +772,12 @@ def _render_single_result(result_dict: dict, resume_text: str):
 
     st.divider()
 
-    # マッチした要件
-    st.subheader(f"✅ マッチした要件（{len(result_dict['matched'])}件）")
-
-    if result_dict['matched']:
-        for i, m in enumerate(result_dict['matched'], 1):
-            with st.expander(
-                f"**[{m.requirement.req_id}]** {m.requirement.description} "
-                f"（一致度: {m.evidence.confidence:.0%}）"
-            ):
-                st.markdown(f"**カテゴリ**: {m.requirement.category.value}")
-                st.markdown(f"**重要度**: {'⭐' * m.requirement.importance}")
-                st.markdown(f"**一致度**: {m.evidence.confidence:.2f} ({m.evidence.confidence_level.value})")
-
-                st.markdown("**判定理由**:")
-                st.write(m.evidence.reason)
-
-                # 引用を表示（quotesを使用、後方互換性でresume_quotesも対応）
-                quotes_to_display = m.evidence.quotes if m.evidence.quotes else [
-                    type('Quote', (), {'text': q, 'source': QuoteSource.RESUME, 'source_id': None})()
-                    for q in (m.evidence.resume_quotes or [])
-                ]
-                
-                if quotes_to_display:
-                    st.markdown("**職務経歴からの引用**:")
-                    
-                    for quote_obj in quotes_to_display:
-                        # Quote構造体から情報を取得
-                        quote_text = quote_obj.text if hasattr(quote_obj, 'text') else quote_obj
-                        source = quote_obj.source if hasattr(quote_obj, 'source') else QuoteSource.RESUME
-                        source_id = getattr(quote_obj, 'source_id', None)
-                        
-                        # 引用の出どころを表示
-                        if source == QuoteSource.RESUME:
-                            source_label = "📄 [職務経歴書]"
-                        else:
-                            if source_id is not None:
-                                source_label = f"🔍 [実績DB #{source_id + 1}]"
-                            else:
-                                source_label = "🔍 [実績DB]"
-                        
-                        # 引用が実際に存在するか検証
-                        is_valid = verify_quote_in_text(quote_text, resume_text)
-                        if is_valid:
-                            st.markdown(f"> **{source_label}** {quote_text}")
-                        else:
-                            # 警告表示：引用が見つからない場合
-                            st.markdown(f"> **{source_label}** ⚠️ **引用要確認**")
-                            st.markdown(f"> {quote_text}")
-
-                st.markdown("**求人票からの引用**:")
-                st.markdown(f"> {m.requirement.job_quote}")
-    else:
-        st.write("マッチした要件はありません。")
-
-    st.divider()
-
-    # ギャップのある要件
-    st.subheader(f"⚠️ ギャップのある要件（{len(result_dict['gaps'])}件）")
-
-    if result_dict['gaps']:
-        for i, g in enumerate(result_dict['gaps'], 1):
-            with st.expander(
-                f"**[{g.requirement.req_id}]** {g.requirement.description} "
-                f"（{g.requirement.category.value}）",
-                expanded=(i <= 3)  # 最初の3件は展開
-            ):
-                st.markdown(f"**カテゴリ**: {g.requirement.category.value}")
-                st.markdown(f"**重要度**: {'⭐' * g.requirement.importance}")
-
-                st.markdown("**不足理由**:")
-                st.warning(g.evidence.reason)
-
-                st.markdown("**埋め方のヒント**:")
-                st.markdown(
-                    f"- 該当する経験があれば職務経歴書に**明示的に記載**してください\n"
-                    f"- 経験がない場合は、下記の「改善案」を参考に**学習・実績作り**を検討してください"
-                )
-    else:
-        st.write("ギャップはありません。全ての要件を満たしています！")
-
-    st.divider()
+    # 要件と根拠をMust/Wantでセクション分けして表示（改善版）
+    render_requirements_by_category(
+        result_dict['matched'],
+        result_dict['gaps'],
+        resume_text
+    )
 
     # 改善案
     improvements = result_dict.get('improvements')
@@ -915,6 +879,56 @@ def _render_single_result(result_dict: dict, resume_text: str):
         st.markdown("### 💡 改善ポイント")
         for i, point in enumerate(quality_evaluation.improvement_points, 1):
             st.markdown(f"{i}. {point}")
+    
+    st.divider()
+    
+    # Judge評価（F7）
+    judge_evaluation = result_dict.get('judge_evaluation')
+    if judge_evaluation:
+        st.subheader("⚖️ Judge評価結果（3観点評価）")
+        
+        # 3観点のスコア表示
+        col_j1, col_j2, col_j3 = st.columns(3)
+        
+        with col_j1:
+            st.metric(
+                label="納得感",
+                value=f"{judge_evaluation.scores.convincing:.1f}点",
+                delta=None
+            )
+            st.caption("ユーザーが判断しやすい構造・説明か")
+        
+        with col_j2:
+            st.metric(
+                label="根拠の妥当性",
+                value=f"{judge_evaluation.scores.grounding:.1f}点",
+                delta=None
+            )
+            st.caption("引用が要件に適切に紐づいているか")
+        
+        with col_j3:
+            st.metric(
+                label="誇張抑制",
+                value=f"{judge_evaluation.scores.no_exaggeration:.1f}点",
+                delta=None
+            )
+            st.caption("職務経歴にないことを断定していないか")
+        
+        st.divider()
+        
+        # 問題点
+        if judge_evaluation.issues:
+            st.markdown("### ⚠️ 問題点")
+            for i, issue in enumerate(judge_evaluation.issues, 1):
+                st.markdown(f"{i}. {issue}")
+        
+        st.divider()
+        
+        # 改善提案
+        if judge_evaluation.fix_suggestions:
+            st.markdown("### 💡 改善提案")
+            for i, suggestion in enumerate(judge_evaluation.fix_suggestions, 1):
+                st.markdown(f"{i}. {suggestion}")
 
 
 def _get_top_strengths(matched, top_n=3):

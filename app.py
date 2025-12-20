@@ -545,20 +545,20 @@ def main():
 
                 # 結果をsession_stateに保存
                 st.session_state.result = {
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "execution_time": execution_time,
-                    "requirements": requirements,
-                    "evidence_map": evidence_map,
-                    "score_total": score_total,
-                    "score_must": score_must,
-                    "score_want": score_want,
-                    "matched": matched,
-                    "gaps": gaps,
-                    "summary": summary,
-                    "improvements": improvements,
-                    "interview_qas": interview_qas,
-                    "quality_evaluation": quality_evaluation,  # Noneの可能性あり
-                    "resume_text": resume_text,  # 引用検証用に保存
+                    "timestamp": result["timestamp"],
+                    "execution_time": result["execution_time"],
+                    "requirements": result["requirements"],
+                    "evidence_map": result["evidence_map"],
+                    "score_total": result["score_total"],
+                    "score_must": result["score_must"],
+                    "score_want": result["score_want"],
+                    "matched": result["matched"],
+                    "gaps": result["gaps"],
+                    "summary": result["summary"],
+                    "improvements": result["improvements"],
+                    "interview_qas": result["interview_qas"],
+                    "quality_evaluation": result.get("quality_evaluation"),  # Noneの可能性あり
+                    "resume_text": result["resume_text"],  # 引用検証用に保存
                 }
 
                 st.balloons()

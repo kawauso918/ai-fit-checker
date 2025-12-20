@@ -93,67 +93,75 @@ def run_analysis_core(
     # 実行時間計測開始
     start_time = time.time()
     
-    # F1: 求人要件抽出
-    requirements = extract_requirements(job_text, options)
-    
-    # F2: 根拠抽出
-    options_with_notes = options.copy()
-    options_with_notes["achievement_notes"] = achievement_notes if achievement_notes else None
-    evidence_map = extract_evidence(resume_text, requirements, options_with_notes)
-    
-    # RAGエラーメッセージを取得
-    rag_error_message = options_with_notes.get("rag_error_message")
-    
-    # F3: スコア計算
-    score_total, score_must, score_want, matched, gaps, summary = calculate_scores(
-        requirements, evidence_map, emphasis_axes=emphasis_axes
-    )
-    
-    # F4: 改善案生成
-    improvements = generate_improvements(
-        job_text, resume_text, requirements, matched, gaps, options
-    )
-    
-    # F5: 面接想定Q&A生成
-    interview_qas = generate_interview_qa(
-        job_text, resume_text, matched, gaps, summary, options
-    )
-    
-    # F6: 品質評価（失敗時はスキップ）
-    quality_evaluation = None
     try:
-        quality_evaluation = evaluate_quality(
-            job_text, resume_text, matched, gaps, improvements, interview_qas, options
+        # F1: 求人要件抽出
+        requirements = extract_requirements(job_text, options)
+        
+        # F2: 根拠抽出
+        options_with_notes = options.copy()
+        options_with_notes["achievement_notes"] = achievement_notes if achievement_notes else None
+        evidence_map = extract_evidence(resume_text, requirements, options_with_notes)
+        
+        # RAGエラーメッセージを取得
+        rag_error_message = options_with_notes.get("rag_error_message")
+        rag_warning_message = options_with_notes.get("rag_warning_message")
+        
+        # F3: スコア計算
+        score_total, score_must, score_want, matched, gaps, summary = calculate_scores(
+            requirements, evidence_map, emphasis_axes=emphasis_axes
         )
+        
+        # F4: 改善案生成
+        improvements = generate_improvements(
+            job_text, resume_text, requirements, matched, gaps, options
+        )
+        
+        # F5: 面接想定Q&A生成
+        interview_qas = generate_interview_qa(
+            job_text, resume_text, matched, gaps, summary, options
+        )
+        
+        # F6: 品質評価（失敗時はスキップ）
+        quality_evaluation = None
+        try:
+            quality_evaluation = evaluate_quality(
+                job_text, resume_text, matched, gaps, improvements, interview_qas, options
+            )
+        except Exception:
+            # エラー時はスキップ（Noneのまま）
+            pass
+        
+        # 実行時間計測終了
+        end_time = time.time()
+        execution_time = end_time - start_time
+        
+        # 結果を辞書にまとめる
+        result = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "execution_time": execution_time,
+            "resume_text": resume_text,
+            "requirements": requirements,
+            "evidence_map": evidence_map,
+            "score_total": score_total,
+            "score_must": score_must,
+            "score_want": score_want,
+            "matched": matched,
+            "gaps": gaps,
+            "summary": summary,
+            "improvements": improvements,
+            "interview_qas": interview_qas,
+            "quality_evaluation": quality_evaluation,
+            "rag_error_message": rag_error_message,
+            "rag_warning_message": rag_warning_message,
+        }
+        
+        return result
     except Exception:
-        # エラー時はスキップ（Noneのまま）
-        pass
-    
-    # 実行時間計測終了
-    end_time = time.time()
-    execution_time = end_time - start_time
-    
-    # 結果を辞書にまとめる
-    result = {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "execution_time": execution_time,
-        "resume_text": resume_text,
-        "requirements": requirements,
-        "evidence_map": evidence_map,
-        "score_total": score_total,
-        "score_must": score_must,
-        "score_want": score_want,
-        "matched": matched,
-        "gaps": gaps,
-        "summary": summary,
-        "improvements": improvements,
-        "interview_qas": interview_qas,
-        "quality_evaluation": quality_evaluation,
-        "rag_error_message": rag_error_message,
-        "rag_warning_message": options_with_notes.get("rag_warning_message"),
-    }
-    
-    return result
+        # エラーが発生した場合でも、execution_timeを計算してから例外を再発生
+        end_time = time.time()
+        execution_time = end_time - start_time
+        # 例外を再発生（呼び出し元でキャッチされる）
+        raise
 
 
 def main():
@@ -381,6 +389,7 @@ def main():
 
         # 実行時間計測開始
         start_time = time.time()
+        execution_time = 0.0  # エラー時でも確実に定義されるように初期化
 
         try:
             if compare_mode:
@@ -640,11 +649,12 @@ def main():
 
         # 実行ログ
         with st.expander("📋 実行ログ"):
-            st.markdown(f"**実行日時**: {result['timestamp']}")
-            st.markdown(f"**実行時間**: {result['execution_time']:.2f}秒")
-            st.markdown(f"**抽出要件数**: {len(result['requirements'])}件")
-            st.markdown(f"**マッチ数**: {len(result['matched'])}件")
-            st.markdown(f"**ギャップ数**: {len(result['gaps'])}件")
+            st.markdown(f"**実行日時**: {result.get('timestamp', 'N/A')}")
+            execution_time = result.get('execution_time', 0.0)
+            st.markdown(f"**実行時間**: {execution_time:.2f}秒")
+            st.markdown(f"**抽出要件数**: {len(result.get('requirements', []))}件")
+            st.markdown(f"**マッチ数**: {len(result.get('matched', []))}件")
+            st.markdown(f"**ギャップ数**: {len(result.get('gaps', []))}件")
 
 
 def _render_single_result(result_dict: dict, resume_text: str):

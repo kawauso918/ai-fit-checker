@@ -476,22 +476,11 @@ def main():
                             job_text_item, resume_text, requirements, matched, gaps, options_with_company
                         )
                     
-                    # F5: 面接想定Q&A生成
-                    with st.spinner(f"⏳ 求人{idx} - F5: 面接想定Q&Aを生成中..."):
-                        interview_qas = generate_interview_qa(
-                            job_text_item, resume_text, matched, gaps, summary, options
-                        )
-                    
-                    # F6: 品質評価（失敗時はスキップ）
+                    # F5/F6/F7/F8はボタン押下型に変更（コスト削減のため）
+                    interview_qas = None
                     quality_evaluation = None
-                    try:
-                        with st.spinner(f"⏳ 求人{idx} - F6: 品質評価を実行中..."):
-                            quality_evaluation = evaluate_quality(
-                                job_text_item, resume_text, matched, gaps, improvements, interview_qas, options
-                            )
-                    except Exception as e:
-                        # エラー時はスキップ（警告は出さない、比較モードでは簡潔に）
-                        pass
+                    judge_evaluation = None
+                    application_email = None
                     
                     # 結果を保存
                     all_results.append({
@@ -507,8 +496,11 @@ def main():
                         "gaps": gaps,
                         "summary": summary,
                         "improvements": improvements,
-                        "interview_qas": interview_qas,
-                        "quality_evaluation": quality_evaluation,  # Noneの可能性あり
+                        "interview_qas": interview_qas,  # ボタン押下型のためNone
+                        "quality_evaluation": quality_evaluation,  # ボタン押下型のためNone
+                        "judge_evaluation": judge_evaluation,  # ボタン押下型のためNone
+                        "application_email": application_email,  # ボタン押下型のためNone
+                        "options": options_with_company,  # ボタン押下型生成用
                     })
                     
                     st.success(f"✅ 求人{idx}の分析完了: 総合スコア {score_total}点")
@@ -572,11 +564,14 @@ def main():
                     st.success(f"✅ F2完了: {len(result['evidence_map'])}件の根拠を分析")
                     st.success(f"✅ F3完了: 総合スコア {result['score_total']}点")
                     st.success(f"✅ F4完了: {len(result['improvements'].action_items)}件の行動計画を生成")
-                    st.success(f"✅ F5完了: {len(result['interview_qas'].qa_list)}件のQ&Aを生成")
+                    if result.get('interview_qas') and result['interview_qas'].qa_list:
+                        st.success(f"✅ F5完了: {len(result['interview_qas'].qa_list)}件のQ&Aを生成")
+                    else:
+                        st.info("ℹ️ F5（面接想定Q&A）はボタン押下で生成できます")
                     if result.get('quality_evaluation'):
                         st.success(f"✅ F6完了: 総合品質スコア {result['quality_evaluation'].overall_score:.1f}点")
                     else:
-                        st.info("ℹ️ F6（品質評価）をスキップしました")
+                        st.info("ℹ️ F6（品質評価）はボタン押下で実行できます")
 
                 # 結果をsession_stateに保存
                 st.session_state.result = {

@@ -302,3 +302,31 @@ class ApplicationEmail(BaseModel):
 class F8Output(BaseModel):
     """F8の出力形式"""
     application_email: ApplicationEmail = Field(..., description="応募メール文面")
+
+
+# ==================== 応募メール下書き生成 ====================
+class EmailEvidence(BaseModel):
+    """本文中の主張に対する根拠"""
+    claim: str = Field(..., description="主張（例: 「Python開発経験5年」）")
+    evidence_type: str = Field(..., description="根拠タイプ（requirement/resume/achievement）")
+    evidence_text: str = Field(..., description="根拠テキスト（引用または箇条書き）")
+    requirement_id: Optional[str] = Field(None, description="対応する要件ID（該当する場合）")
+
+
+class EmailDraft(BaseModel):
+    """応募メール下書き"""
+    subject_options: List[str] = Field(..., min_length=2, max_length=3, description="件名案（2〜3件）")
+    body: str = Field(..., description="本文テンプレート（丁寧、短め、300-500文字程度）")
+    evidence_list: List[EmailEvidence] = Field(
+        default_factory=list,
+        description="本文中の主張に対する根拠リスト（どの実績・どの要件に紐づくか）"
+    )
+    notes: List[str] = Field(
+        default_factory=list,
+        description="注意事項・ヒント（捏造禁止、未経験の表現方法など）"
+    )
+
+
+class EmailDraftOutput(BaseModel):
+    """応募メール下書きの出力形式"""
+    email_draft: EmailDraft = Field(..., description="応募メール下書き")

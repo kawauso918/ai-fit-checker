@@ -14,6 +14,8 @@ from f5_generate_interview_qa import generate_interview_qa
 from f6_quality_evaluation import evaluate_quality
 from f7_judge_evaluation import evaluate_with_judge
 from f8_generate_application_email import generate_application_email
+from email_draft import generate_email_draft
+from job_chat import ask_job_chat
 from models import RequirementType, ConfidenceLevel, QuoteSource
 from utils import verify_quote_in_text
 from pdf_export import generate_pdf
@@ -623,9 +625,9 @@ def main():
                     "judge_evaluation": result.get("judge_evaluation"),  # Noneの可能性あり
                     "application_email": result.get("application_email"),  # Noneの可能性あり
                     "resume_text": result["resume_text"],  # 引用検証用に保存
-                    "job_text": result.get("job_text"),  # チャット機能用
-                    "company_info": result.get("company_info"),  # チャット機能用
-                    "options": options,  # チャット機能用
+                    "job_text": result.get("job_text"),  # チャット機能用・下書き生成用
+                    "company_info": result.get("company_info"),  # チャット機能用・下書き生成用
+                    "options": options,  # チャット機能用・下書き生成用
                 }
 
                 st.balloons()
@@ -995,60 +997,165 @@ def _render_single_result(result_dict: dict, resume_text: str, job_text: str = N
     
     st.divider()
     
-    # チャット機能
-    with st.expander("💬 チャットで求人内容を深掘り考察", expanded=False):
-        st.markdown("**求人内容の深掘り考察や応募文面改善の提案ができます**")
+    # 応募メール下書き生成
+    st.subheader("📩 応募メール下書き")
+    st.markdown("**ボタンを押すと応募メール下書きを生成します（コスト対策のため、自動生成は行いません）**")
+    
+    # session_stateに下書きを保持
+    email_draft_key = f"email_draft_{id(result_dict)}"
+    if email_draft_key not in st.session_state:
+        st.session_state[email_draft_key] = None
+    
+    # 生成ボタン
+    generate_draft_button = st.button(
+        "📝 応募メール下書きを生成",
+        type="primary",
+        key=f"generate_draft_{id(result_dict)}"
+    )
+    
+    # 生成実行
+    if generate_draft_button:
+        with st.spinner("⏳ 応募メール下書きを生成中..."):
+            try:
+                # optionsを取得（result_dictに含まれていない場合は空辞書）
+                options_for_draft = result_dict.get('options', {})
+                if not options_for_draft:
+                    # optionsが無い場合は、デフォルト値を設定
+                    options_for_draft = {
+                        "llm_provider": "openai",
+                        "model_name": None
+                    }
+                
+                email_draft = generate_email_draft(
+                    job_text=result_dict.get('job_text', ''),
+                    resume_text=result_dict.get('resume_text', ''),
+                    company_text=result_dict.get('company_info'),
+                    requirements=result_dict.get('requirements', []),
+                    matched=result_dict.get('matched', []),
+                    gaps=result_dict.get('gaps', []),
+                    improvements=result_dict.get('improvements'),
+                    options=options_for_draft
+                )
+                st.session_state[email_draft_key] = email_draft
+                st.success("✅ 応募メール下書きを生成しました")
+            except Exception as e:
+                st.error(f"❌ 応募メール下書きの生成に失敗しました: {e}")
+    
+    # 下書きを表示
+    email_draft = st.session_state.get(email_draft_key)
+    if email_draft:
+        st.markdown("---")
         
-        # チャット履歴を初期化（session_state）
-        if 'chat_history' not in st.session_state:
-            st.session_state.chat_history = []
+        # 件名案
+        st.markdown("### 件名案（2〜3件）")
+        for i, subject in enumerate(email_draft.subject_options, 1):
+            st.code(subject, language="text")
         
-        # チャット履歴を表示
-        if st.session_state.chat_history:
-            st.markdown("### チャット履歴")
-            for i, (user_msg, assistant_msg) in enumerate(st.session_state.chat_history):
-                with st.expander(f"💬 会話 {i+1}", expanded=False):
-                    st.markdown(f"**あなた**: {user_msg}")
-                    st.markdown(f"**アシスタント**: {assistant_msg}")
+        st.divider()
         
-        # チャット入力
-        user_input = st.text_input(
-            "質問を入力してください",
-            placeholder="例: この求人の必須スキルについて詳しく教えてください / 応募メールの改善点を教えてください",
-            key="chat_input"
+        # 本文
+        st.markdown("### 本文テンプレート")
+        st.text_area(
+            "本文（コピー用）",
+            value=email_draft.body,
+            height=300,
+            key=f"email_draft_body_{id(result_dict)}"
         )
         
-        col_chat1, col_chat2 = st.columns([1, 4])
-        with col_chat1:
-            send_button = st.button("送信", type="primary", key="chat_send")
+        st.divider()
         
-        # チャット送信
-        if send_button and user_input:
-            with st.spinner("考え中..."):
-                # 分析結果を取得（result_dictから）
-                analysis_result = {
-                    'summary': result_dict.get('summary', ''),
-                    'score_total': result_dict.get('score_total', 0),
-                    'matched': result_dict.get('matched', []),
-                    'gaps': result_dict.get('gaps', [])
-                }
-                
-                # チャット応答を生成
-                assistant_response = get_chat_response(
-                    user_message=user_input,
-                    job_text=result_dict.get('job_text', '') if 'job_text' in result_dict else '',
-                    resume_text=result_dict.get('resume_text', ''),
-                    company_info=result_dict.get('company_info', None),
-                    analysis_result=analysis_result,
-                    chat_history=st.session_state.chat_history,
-                    options=result_dict.get('options', {}) if 'options' in result_dict else {}
-                )
-                
-                # チャット履歴に追加
-                st.session_state.chat_history.append((user_input, assistant_response))
-                
-                # ページをリロードして履歴を表示
-                st.rerun()
+        # 根拠リスト
+        if email_draft.evidence_list:
+            st.markdown("### 📋 根拠リスト（どの実績・どの要件に紐づくか）")
+            for i, evidence in enumerate(email_draft.evidence_list, 1):
+                with st.expander(f"**根拠{i}: {evidence.claim}**", expanded=False):
+                    st.markdown(f"**根拠タイプ**: {evidence.evidence_type}")
+                    if evidence.requirement_id:
+                        st.markdown(f"**対応要件ID**: {evidence.requirement_id}")
+                    st.markdown("**根拠テキスト**:")
+                    st.code(evidence.evidence_text, language="text")
+        
+        st.divider()
+        
+        # 注意事項
+        if email_draft.notes:
+            st.markdown("### ⚠️ 注意事項・ヒント")
+            for i, note in enumerate(email_draft.notes, 1):
+                st.markdown(f"{i}. {note}")
+        
+        st.info("💡 **重要**: 送信前に必ず内容を確認し、誤字脱字や企業名・役職名が正しいか確認してください。職務経歴にない経験を断定しないよう注意してください。")
+    
+    st.divider()
+    
+    # 求人深掘りチャット
+    st.subheader("🧠 求人深掘りチャット")
+    st.markdown("**求人の解釈、応募戦略、応募メールの改善案を質問できます**")
+    
+    # session_stateにチャット履歴を保持（結果ごとに独立）
+    job_chat_key = f"job_chat_history_{id(result_dict)}"
+    if job_chat_key not in st.session_state:
+        st.session_state[job_chat_key] = []
+    
+    # チャット履歴を表示
+    chat_history = st.session_state.get(job_chat_key, [])
+    if chat_history:
+        st.markdown("### チャット履歴")
+        for i, (user_msg, assistant_msg) in enumerate(chat_history, 1):
+            with st.expander(f"💬 会話 {i+1}", expanded=(i == len(chat_history))):  # 最新の会話は展開
+                st.markdown(f"**あなた**: {user_msg}")
+                st.markdown(f"**アシスタント**: {assistant_msg}")
+    
+    # チャット入力（st.chat_inputを使用）
+    if prompt := st.chat_input("質問を入力してください（例: この要件は何を意味しますか？ / 応募戦略を教えてください）"):
+        with st.spinner("考え中..."):
+            # チャット応答を生成
+            assistant_response = ask_job_chat(
+                user_message=prompt,
+                job_text=result_dict.get('job_text', ''),
+                resume_text=result_dict.get('resume_text', ''),
+                company_text=result_dict.get('company_info'),
+                requirements=result_dict.get('requirements', []),
+                matched=result_dict.get('matched', []),
+                gaps=result_dict.get('gaps', []),
+                summary=result_dict.get('summary', ''),
+                chat_history=chat_history,
+                options=result_dict.get('options', {})
+            )
+            
+            # チャット履歴に追加
+            chat_history.append((prompt, assistant_response))
+            st.session_state[job_chat_key] = chat_history
+            
+            # ページをリロードして履歴を表示
+            st.rerun()
+    
+    # 質問例を表示
+    with st.expander("💡 質問例", expanded=False):
+        st.markdown("""
+以下のような質問ができます：
+
+1. **求人の解釈**
+   - 「この要件『Python開発経験3年以上』は具体的に何を求めていますか？」
+   - 「『フルスタック開発経験』とはどのような業務を指しますか？」
+
+2. **応募戦略**
+   - 「この求人で強調すべき点は何ですか？」
+   - 「避けるべき点や注意すべき点はありますか？」
+   - 「ギャップがある要件について、どのように対応すべきですか？」
+
+3. **応募メールの改善案**
+   - 「応募メールの冒頭部分を改善したいです。どのような表現が良いですか？」
+   - 「志望動機の書き方を教えてください」
+   - 「職務経歴の要点を簡潔に伝える方法は？」
+
+4. **確認すべき点**
+   - 「面接前に確認すべき質問はありますか？」
+   - 「この求人で不明な点を確認する方法は？」
+
+5. **具体的な例文**
+   - 「『Python開発経験5年』をアピールする例文を教えてください」
+   - 「未経験の技術について、どのように表現すべきですか？」
+        """)
 
 
 def _get_top_strengths(matched, top_n=3):

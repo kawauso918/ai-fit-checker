@@ -282,3 +282,23 @@ class JudgeEvaluation(BaseModel):
 class F7Output(BaseModel):
     """F7の出力形式"""
     judge_evaluation: JudgeEvaluation = Field(..., description="Judge評価結果")
+
+
+# ==================== F8: 応募メール文面生成 ====================
+class ApplicationEmail(BaseModel):
+    """応募メール文面"""
+    subject: str = Field(..., description="件名")
+    body: str = Field(..., description="本文")
+    attachment_suggestions: List[str] = Field(
+        default_factory=list,
+        description="添付資料の提案（例: 職務経歴書、ポートフォリオなど）"
+    )
+    tips: List[str] = Field(
+        default_factory=list,
+        description="送信時の注意点・ヒント"
+    )
+
+
+class F8Output(BaseModel):
+    """F8の出力形式"""
+    application_email: ApplicationEmail = Field(..., description="応募メール文面")

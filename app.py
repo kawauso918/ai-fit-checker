@@ -13,12 +13,14 @@ from f4_generate_improvements import generate_improvements
 from f5_generate_interview_qa import generate_interview_qa
 from f6_quality_evaluation import evaluate_quality
 from f7_judge_evaluation import evaluate_with_judge
+from f8_generate_application_email import generate_application_email
 from models import RequirementType, ConfidenceLevel, QuoteSource
 from utils import verify_quote_in_text
 from pdf_export import generate_pdf
 from rag_error_handler import validate_rag_inputs, get_rag_status
 from input_validator import validate_inputs, validate_requirements_extracted
 from ui_components import render_requirements_by_category
+from chat_interface import get_chat_response
 import os
 
 
@@ -26,6 +28,7 @@ def run_analysis_core(
     job_text: str,
     resume_text: str,
     achievement_notes: str = None,
+    company_info: str = None,
     emphasis_axes: list = None,
     options: dict = None
 ) -> dict:
@@ -36,6 +39,7 @@ def run_analysis_core(
         job_text: 求人票のテキスト
         resume_text: 職務経歴書のテキスト
         achievement_notes: 実績メモ（オプション）
+        company_info: 企業情報（オプション）
         emphasis_axes: 強調軸のリスト（オプション）
         options: オプション辞書（llm_provider, model_name, temperature等）
     
@@ -54,35 +58,9 @@ def run_analysis_core(
             - improvements: 改善案
             - interview_qas: 面接Q&A
             - quality_evaluation: 品質評価（Noneの可能性あり）
+            - judge_evaluation: Judge評価（Noneの可能性あり）
             - rag_error_message: RAGエラーメッセージ（Noneの可能性あり）
             - rag_warning_message: RAG警告メッセージ（Noneの可能性あり）
-    """
-    """
-    分析処理のコア関数（Streamlit UIに依存しない）
-    
-    Args:
-        job_text: 求人票のテキスト
-        resume_text: 職務経歴書のテキスト
-        achievement_notes: 実績メモ（オプション）
-        emphasis_axes: 強調軸のリスト（オプション）
-        options: オプション辞書（llm_provider, model_name, temperature等）
-    
-    Returns:
-        dict: 分析結果の辞書
-            - timestamp: 実行日時
-            - execution_time: 実行時間（秒）
-            - requirements: 抽出された要件リスト
-            - evidence_map: 根拠マップ
-            - score_total: 総合スコア
-            - score_must: Mustスコア
-            - score_want: Wantスコア
-            - matched: マッチした要件リスト
-            - gaps: ギャップのある要件リスト
-            - summary: サマリ
-            - improvements: 改善案
-            - interview_qas: 面接Q&A
-            - quality_evaluation: 品質評価（Noneの可能性あり）
-            - rag_error_message: RAGエラーメッセージ（Noneの可能性あり）
     """
     import time
     from datetime import datetime
@@ -150,6 +128,16 @@ def run_analysis_core(
             # エラー時はスキップ（Noneのまま）
             pass
         
+        # F8: 応募メール文面生成（失敗時はスキップ）
+        application_email = None
+        try:
+            application_email = generate_application_email(
+                job_text, resume_text, company_info, matched, gaps, improvements, summary, options
+            )
+        except Exception:
+            # エラー時はスキップ（Noneのまま）
+            pass
+        
         # 実行時間計測終了
         end_time = time.time()
         execution_time = end_time - start_time
@@ -175,6 +163,7 @@ def run_analysis_core(
             "interview_qas": interview_qas,
             "quality_evaluation": quality_evaluation,
             "judge_evaluation": judge_evaluation,
+            "application_email": application_email,
             "rag_error_message": rag_error_message,
             "rag_warning_message": rag_warning_message,
         }
@@ -284,6 +273,17 @@ def main():
             key="emphasis_axis"
         )
 
+    # 企業情報（オプション）
+    with st.expander("🏢 企業情報（オプション）", expanded=False):
+        st.markdown("**会社概要や採用ページ全体などの情報を記載してください**")
+        st.markdown("企業情報を追加すると、より詳細な分析や応募文面の生成が可能になります。")
+        company_info = st.text_area(
+            "企業情報を貼り付けてください（会社概要、採用ページ、企業文化など）",
+            height=200,
+            placeholder="例：\n\n【会社概要】\n・設立：2010年\n・従業員数：100名\n・事業内容：SaaS開発・提供\n\n【企業文化】\n・フラットな組織体制\n・リモートワーク推奨\n・技術力重視",
+            key="company_info"
+        )
+    
     # 実績メモ（オプション）
     with st.expander("📝 実績メモ（オプション）", expanded=False):
         st.markdown("**追加の実績・経験を記載してください**")
@@ -397,11 +397,14 @@ def main():
         
         # 入力検証（求人票/職務経歴書の長さチェック）
         for idx, job_text_item in enumerate(job_texts, 1):
-            is_valid, error_message = validate_inputs(job_text_item, resume_text)
+            is_valid, error_message, warning_message = validate_inputs(job_text_item, resume_text)
             if not is_valid:
                 st.error(f"❌ 入力検証エラー（求人{idx if compare_mode else ''}）:\n\n{error_message}")
                 st.stop()
                 return
+            # 警告メッセージがある場合は表示（処理は続行）
+            if warning_message:
+                st.warning(f"⚠️ 警告（求人{idx if compare_mode else ''}）:\n\n{warning_message}")
 
         # 強調軸をリストに変換（カンマ区切り対応）
         emphasis_axes_list = []
@@ -548,6 +551,7 @@ def main():
                         job_text=job_text,
                         resume_text=resume_text,
                         achievement_notes=achievement_notes,
+                        company_info=company_info if 'company_info' in locals() else None,
                         emphasis_axes=emphasis_axes_list,
                         options=options
                     )
@@ -606,7 +610,12 @@ def main():
                     "improvements": result["improvements"],
                     "interview_qas": result["interview_qas"],
                     "quality_evaluation": result.get("quality_evaluation"),  # Noneの可能性あり
+                    "judge_evaluation": result.get("judge_evaluation"),  # Noneの可能性あり
+                    "application_email": result.get("application_email"),  # Noneの可能性あり
                     "resume_text": result["resume_text"],  # 引用検証用に保存
+                    "job_text": result.get("job_text"),  # チャット機能用
+                    "company_info": result.get("company_info"),  # チャット機能用
+                    "options": options,  # チャット機能用
                 }
 
                 st.balloons()
@@ -684,7 +693,12 @@ def main():
         st.divider()
 
         # 通常モードの結果表示（関数化したロジックを使用）
-        _render_single_result(result, result.get("resume_text", ""))
+        _render_single_result(
+            result, 
+            result.get("resume_text", ""),
+            job_text=result.get("job_text"),
+            company_info=result.get("company_info")
+        )
 
         # 実行ログ
         with st.expander("📋 実行ログ"):
@@ -696,14 +710,21 @@ def main():
             st.markdown(f"**ギャップ数**: {len(result.get('gaps', []))}件")
 
 
-def _render_single_result(result_dict: dict, resume_text: str):
+def _render_single_result(result_dict: dict, resume_text: str, job_text: str = None, company_info: str = None):
     """
     単一の分析結果を表示（通常モードと比較モードで共通使用）
     
     Args:
         result_dict: 分析結果の辞書（result または compare_results["results"][i]）
         resume_text: 職務経歴書のテキスト（引用検証用）
+        job_text: 求人票のテキスト（チャット機能用、オプション）
+        company_info: 企業情報（チャット機能用、オプション）
     """
+    # チャット機能用に情報を追加
+    if job_text:
+        result_dict['job_text'] = job_text
+    if company_info:
+        result_dict['company_info'] = company_info
     # メトリクス表示
     col_m1, col_m2, col_m3, col_m4 = st.columns(4)
 
@@ -929,6 +950,95 @@ def _render_single_result(result_dict: dict, resume_text: str):
             st.markdown("### 💡 改善提案")
             for i, suggestion in enumerate(judge_evaluation.fix_suggestions, 1):
                 st.markdown(f"{i}. {suggestion}")
+    
+    st.divider()
+    
+    # 応募メール文面（F8）
+    application_email = result_dict.get('application_email')
+    if application_email:
+        st.subheader("📧 応募メール文面")
+        
+        # 件名
+        st.markdown("### 件名")
+        st.code(application_email.subject, language="text")
+        
+        # 本文
+        st.markdown("### 本文")
+        st.text_area(
+            "本文（コピー用）",
+            value=application_email.body,
+            height=300,
+            key="email_body_copy"
+        )
+        
+        # 添付資料の提案
+        if application_email.attachment_suggestions:
+            st.markdown("### 📎 添付資料の提案")
+            for attachment in application_email.attachment_suggestions:
+                st.markdown(f"- {attachment}")
+        
+        # 送信時の注意点
+        if application_email.tips:
+            st.markdown("### 💡 送信時の注意点")
+            for i, tip in enumerate(application_email.tips, 1):
+                st.markdown(f"{i}. {tip}")
+    
+    st.divider()
+    
+    # チャット機能
+    with st.expander("💬 チャットで求人内容を深掘り考察", expanded=False):
+        st.markdown("**求人内容の深掘り考察や応募文面改善の提案ができます**")
+        
+        # チャット履歴を初期化（session_state）
+        if 'chat_history' not in st.session_state:
+            st.session_state.chat_history = []
+        
+        # チャット履歴を表示
+        if st.session_state.chat_history:
+            st.markdown("### チャット履歴")
+            for i, (user_msg, assistant_msg) in enumerate(st.session_state.chat_history):
+                with st.expander(f"💬 会話 {i+1}", expanded=False):
+                    st.markdown(f"**あなた**: {user_msg}")
+                    st.markdown(f"**アシスタント**: {assistant_msg}")
+        
+        # チャット入力
+        user_input = st.text_input(
+            "質問を入力してください",
+            placeholder="例: この求人の必須スキルについて詳しく教えてください / 応募メールの改善点を教えてください",
+            key="chat_input"
+        )
+        
+        col_chat1, col_chat2 = st.columns([1, 4])
+        with col_chat1:
+            send_button = st.button("送信", type="primary", key="chat_send")
+        
+        # チャット送信
+        if send_button and user_input:
+            with st.spinner("考え中..."):
+                # 分析結果を取得（result_dictから）
+                analysis_result = {
+                    'summary': result_dict.get('summary', ''),
+                    'score_total': result_dict.get('score_total', 0),
+                    'matched': result_dict.get('matched', []),
+                    'gaps': result_dict.get('gaps', [])
+                }
+                
+                # チャット応答を生成
+                assistant_response = get_chat_response(
+                    user_message=user_input,
+                    job_text=result_dict.get('job_text', '') if 'job_text' in result_dict else '',
+                    resume_text=result_dict.get('resume_text', ''),
+                    company_info=result_dict.get('company_info', None),
+                    analysis_result=analysis_result,
+                    chat_history=st.session_state.chat_history,
+                    options=result_dict.get('options', {}) if 'options' in result_dict else {}
+                )
+                
+                # チャット履歴に追加
+                st.session_state.chat_history.append((user_input, assistant_response))
+                
+                # ページをリロードして履歴を表示
+                st.rerun()
 
 
 def _get_top_strengths(matched, top_n=3):

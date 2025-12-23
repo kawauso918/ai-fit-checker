@@ -47,6 +47,7 @@ def generate_improvements(
             - llm_provider: "openai" or "anthropic"（デフォルト "openai"）
             - model_name: モデル名
             - max_gaps: 最大ギャップ件数（デフォルト5）
+            - company_text: 企業情報（オプション、志望動機/表現の寄せに使用）
 
     Returns:
         Improvements: 改善案
@@ -58,6 +59,7 @@ def generate_improvements(
     llm_provider = options.get("llm_provider", "openai")
     model_name = options.get("model_name", None)
     max_gaps = options.get("max_gaps", 5)
+    company_text = options.get("company_text", None)
 
     # ギャップをMust優先でソート、上位N件を選択
     sorted_gaps = _prioritize_gaps(gaps, max_count=max_gaps)
@@ -92,6 +94,17 @@ def generate_improvements(
             for m in matched[:3]  # 最大3件
         ])
 
+        # 企業情報の要約（長すぎる場合は先頭500文字）
+        company_info_section = ""
+        if company_text and company_text.strip():
+            company_text_trimmed = company_text.strip()[:500] + "..." if len(company_text.strip()) > 500 else company_text.strip()
+            company_info_section = f"""
+【企業情報（参考・志望動機/表現の寄せに活用）】
+{company_text_trimmed}
+
+注意：企業情報は志望動機や表現の寄せに活用してください。ただし、職務経歴にない経験を捏造する提案は禁止です。
+"""
+
         # プロンプト作成
         prompt_template = PromptTemplate(
             template="""あなたはキャリアアドバイザーです。以下の情報をもとに、求職者が求人票の要件を満たすための改善案を提案してください。
@@ -101,7 +114,7 @@ def generate_improvements(
 
 職務経歴書（抜粋）：
 {resume_text}
-
+{company_info_section}
 現在マッチしている要件（参考）：
 {matched_str}
 
@@ -128,10 +141,11 @@ def generate_improvements(
    - 「まず〜、次に〜」のような優先順位を示す
 
 **重要**: 経験がないものは捏造せず、「学習」「実績作り」などの現実的な行動計画を提案すること。
+企業情報がある場合は、志望動機や表現の寄せに活用してください（例：「フラットな組織体制を重視」など）。
 
 {format_instructions}
 """,
-            input_variables=["job_text", "resume_text", "matched_str", "gaps_str"],
+            input_variables=["job_text", "resume_text", "matched_str", "gaps_str", "company_info_section"],
             partial_variables={"format_instructions": parser.get_format_instructions()}
         )
 
@@ -147,7 +161,8 @@ def generate_improvements(
                     job_text=job_text_trimmed,
                     resume_text=resume_text_trimmed,
                     matched_str=matched_str,
-                    gaps_str=gaps_str
+                    gaps_str=gaps_str,
+                    company_info_section=company_info_section
                 )
                 output = llm.invoke(prompt)
                 result = parser.parse(output.content)

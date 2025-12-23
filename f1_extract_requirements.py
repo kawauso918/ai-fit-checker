@@ -33,6 +33,7 @@ def extract_requirements(
             - strict_mode: 曖昧一致を認めない（デフォルトFalse）
             - llm_provider: "openai" or "anthropic"（デフォルト "openai"）
             - model_name: モデル名（デフォルト gpt-4o-mini / claude-3-5-sonnet-20241022）
+            - company_text: 企業情報（オプション、背景文脈として補助利用）
 
     Returns:
         List[Requirement]: 抽出された要件リスト
@@ -46,6 +47,7 @@ def extract_requirements(
     strict_mode = options.get("strict_mode", False)
     llm_provider = options.get("llm_provider", "openai")
     model_name = options.get("model_name", None)
+    company_text = options.get("company_text", None)
 
     # LLMの初期化
     try:
@@ -70,12 +72,32 @@ def extract_requirements(
         if strict_mode:
             strict_instruction = "\n注意：曖昧な表現や推測は避け、求人票に明示的に書かれている要件のみを抽出してください。"
 
+        # 企業情報の扱いルール
+        company_info_section = ""
+        company_info_rules = ""
+        if company_text and company_text.strip():
+            # 企業情報を要約（長すぎる場合は先頭1000文字）
+            company_text_trimmed = company_text.strip()[:1000] + "..." if len(company_text.strip()) > 1000 else company_text.strip()
+            company_info_section = f"""
+【企業情報（参考・背景文脈）】
+{company_text_trimmed}
+"""
+            company_info_rules = """
+会社情報の扱いルール（重要）：
+- 企業情報は「背景文脈」として補助的に利用してください（求人票の理解を深めるため）
+- **会社紹介・沿革・所在地などの情報は要件として抽出しない**
+- 企業文化・価値観はWant要件に含めてもよいが、技術スキル・経験要件を優先
+- 例：「フラットな組織」→ Want要件として抽出可（ただし技術要件を優先）
+- 例：「設立2010年」「本社：東京都」→ 要件として抽出しない
+- 求人票に明示されていない要件を企業情報から推測して抽出しない
+"""
+
         prompt_template = PromptTemplate(
             template="""あなたは求人票分析の専門家です。以下の求人票から、Must要件とWant要件を抽出してください。
 
 求人票：
 {job_text}
-
+{company_info_section}
 抽出ルール：
 1. Must要件：「必須」「〜以上」「経験必須」など、必ず満たすべき条件
 2. Want要件：「歓迎」「尚可」「あれば尚良し」など、あると望ましい条件
@@ -92,11 +114,11 @@ def extract_requirements(
    悪い例：「Python」「3年以上」を別々にする（細かすぎ）
    悪い例：「PythonとJavaとRubyの経験」（粗すぎ、分割すべき）
 9. **MustとWantの使い分け**：同じ技術でもレベルが違う場合は明示
-   例：Must「Python基本経験」、Want「Python上級（フレームワーク開発経験）」{strict_instruction}
+   例：Must「Python基本経験」、Want「Python上級（フレームワーク開発経験）」{company_info_rules}{strict_instruction}
 
 {format_instructions}
 """,
-            input_variables=["job_text", "max_must", "max_want", "strict_instruction"],
+            input_variables=["job_text", "max_must", "max_want", "strict_instruction", "company_info_section", "company_info_rules"],
             partial_variables={"format_instructions": parser.get_format_instructions()}
         )
 
@@ -105,7 +127,9 @@ def extract_requirements(
             job_text=job_text,
             max_must=max_must,
             max_want=max_want,
-            strict_instruction=strict_instruction
+            strict_instruction=strict_instruction,
+            company_info_section=company_info_section,
+            company_info_rules=company_info_rules
         )
 
         # LLM実行とパース（最大3回リトライ）
@@ -304,11 +328,18 @@ def _merge_requirements(requirements: List[Requirement]) -> Requirement:
 def _post_process_requirements(requirements: List[Requirement]) -> List[Requirement]:
     """
     後処理：IDをREQ_001...に採番、weightをmust=1.0/want=0.5に設定
+    会社紹介っぽい要件をフィルタ
     """
     processed = []
     req_counter = 1
 
     for req in requirements:
+        # 会社紹介っぽい要件をフィルタ
+        if _is_company_intro_requirement(req):
+            # 会社紹介っぽい要件は除外（ログ出力）
+            print(f"⚠️  会社紹介っぽい要件を除外: {req.description}")
+            continue
+        
         # 新しいIDを採番
         new_id = f"REQ_{req_counter:03d}"
 
@@ -329,6 +360,55 @@ def _post_process_requirements(requirements: List[Requirement]) -> List[Requirem
         req_counter += 1
 
     return processed
+
+
+def _is_company_intro_requirement(req: Requirement) -> bool:
+    """
+    会社紹介っぽい要件かどうかを判定
+    
+    Args:
+        req: 要件
+    
+    Returns:
+        bool: 会社紹介っぽい要件ならTrue
+    """
+    desc_lower = req.description.lower()
+    quote_lower = req.job_quote.lower()
+    
+    # 会社紹介キーワード
+    company_intro_keywords = [
+        "設立", "創業", "本社", "所在地", "住所", "資本金", "従業員数",
+        "沿革", "歴史", "事業内容", "事業領域", "サービス", "製品",
+        "東京都", "大阪府", "神奈川県", "愛知県",  # 所在地
+        "年", "月", "日",  # 日付（設立年月日など）
+        "株式会社", "有限会社", "合同会社",  # 会社形態
+    ]
+    
+    # 説明文または引用文に会社紹介キーワードが含まれているか
+    for keyword in company_intro_keywords:
+        if keyword in desc_lower or keyword in quote_lower:
+            # ただし、技術要件として使われている場合は除外
+            # 例：「設立10年の会社での経験」は技術要件として有効
+            tech_keywords = ["経験", "スキル", "開発", "実装", "設計", "運用"]
+            has_tech_context = any(tech in desc_lower for tech in tech_keywords)
+            if not has_tech_context:
+                return True
+    
+    # 所在地パターン（都道府県名のみ、または「〜県〜市」など）
+    location_patterns = [
+        r'[都道府県]',
+        r'[市区町村]',
+        r'[0-9]+-[0-9]+',  # 郵便番号
+    ]
+    for pattern in location_patterns:
+        if re.search(pattern, desc_lower) or re.search(pattern, quote_lower):
+            # 技術要件の文脈がない場合は除外
+            tech_keywords = ["経験", "スキル", "開発", "実装", "設計", "運用"]
+            has_tech_context = any(tech in desc_lower for tech in tech_keywords)
+            if not has_tech_context:
+                return True
+    
+    return False
 
 
 def _fallback_extract(job_text: str, max_must: int, max_want: int) -> List[Requirement]:

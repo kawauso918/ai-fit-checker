@@ -75,6 +75,11 @@ def run_analysis_core(
     start_time = time.time()
     
     try:
+        # company_infoをoptionsに追加（F1, F4で使用）
+        if company_info and company_info.strip():
+            options = options.copy() if options else {}
+            options["company_text"] = company_info.strip()
+        
         # F1: 求人要件抽出
         requirements = extract_requirements(job_text, options)
         
@@ -434,9 +439,14 @@ def main():
                 for idx, job_text_item in enumerate(job_texts, 1):
                     st.markdown(f"### 📋 求人{idx}の分析中...")
                     
+                    # company_infoをoptionsに追加（F1, F4で使用）
+                    options_with_company = options.copy() if options else {}
+                    if company_info and company_info.strip():
+                        options_with_company["company_text"] = company_info.strip()
+                    
                     # F1: 求人要件抽出
                     with st.spinner(f"⏳ 求人{idx} - F1: 求人要件を抽出中..."):
-                        requirements = extract_requirements(job_text_item, options)
+                        requirements = extract_requirements(job_text_item, options_with_company)
                     
                     # 要件抽出結果の検証
                     is_valid, error_message = validate_requirements_extracted(requirements)
@@ -490,7 +500,7 @@ def main():
                     # F4: 改善案生成
                     with st.spinner(f"⏳ 求人{idx} - F4: 改善案を生成中..."):
                         improvements = generate_improvements(
-                            job_text_item, resume_text, requirements, matched, gaps, options
+                            job_text_item, resume_text, requirements, matched, gaps, options_with_company
                         )
                     
                     # F5: 面接想定Q&A生成

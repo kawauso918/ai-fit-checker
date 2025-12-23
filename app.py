@@ -110,40 +110,11 @@ def run_analysis_core(
             job_text, resume_text, requirements, matched, gaps, options
         )
         
-        # F5: 面接想定Q&A生成
-        interview_qas = generate_interview_qa(
-            job_text, resume_text, matched, gaps, summary, options
-        )
-        
-        # F6: 品質評価（失敗時はスキップ）
+        # F5/F6/F7/F8はボタン押下型に変更（コスト削減のため）
+        interview_qas = None
         quality_evaluation = None
-        try:
-            quality_evaluation = evaluate_quality(
-                job_text, resume_text, matched, gaps, improvements, interview_qas, options
-            )
-        except Exception:
-            # エラー時はスキップ（Noneのまま）
-            pass
-        
-        # F7: Judge評価（失敗時はスキップ）
         judge_evaluation = None
-        try:
-            judge_evaluation = evaluate_with_judge(
-                job_text, resume_text, matched, gaps, improvements, interview_qas, options
-            )
-        except Exception:
-            # エラー時はスキップ（Noneのまま）
-            pass
-        
-        # F8: 応募メール文面生成（失敗時はスキップ）
         application_email = None
-        try:
-            application_email = generate_application_email(
-                job_text, resume_text, company_info, matched, gaps, improvements, summary, options
-            )
-        except Exception:
-            # エラー時はスキップ（Noneのまま）
-            pass
         
         # 実行時間計測終了
         end_time = time.time()
@@ -866,12 +837,37 @@ def _render_single_result(result_dict: dict, resume_text: str, job_text: str = N
 
     st.divider()
 
-    # 面接想定Q&A
-    interview_qas = result_dict.get('interview_qas')
+    # 面接想定Q&A（ボタン押下型）
+    st.subheader("🎤 面接想定Q&A")
+    interview_qas_key = f"interview_qas_{id(result_dict)}"
+    if interview_qas_key not in st.session_state:
+        st.session_state[interview_qas_key] = None
+    
+    interview_qas = st.session_state.get(interview_qas_key)
+    
+    if not interview_qas:
+        if st.button("📝 面接想定Q&Aを生成", type="primary", key=f"gen_interview_{id(result_dict)}"):
+            with st.spinner("⏳ 面接想定Q&Aを生成中..."):
+                try:
+                    from f5_generate_interview_qa import generate_interview_qa
+                    interview_qas = generate_interview_qa(
+                        result_dict.get('job_text', ''),
+                        result_dict.get('resume_text', ''),
+                        result_dict.get('matched', []),
+                        result_dict.get('gaps', []),
+                        result_dict.get('summary', ''),
+                        result_dict.get('options', {})
+                    )
+                    st.session_state[interview_qas_key] = interview_qas
+                    st.success("✅ 面接想定Q&Aを生成しました")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ 生成に失敗しました: {e}")
+        else:
+            st.info("💡 ボタンを押すと面接想定Q&Aを生成します（コスト削減のため自動生成は行いません）")
+    
     if interview_qas and interview_qas.qa_list:
-        st.subheader("🎤 面接想定Q&A")
         st.markdown(f"**{len(interview_qas.qa_list)}件の質問と回答の骨子**")
-
         for i, qa in enumerate(interview_qas.qa_list, 1):
             with st.expander(
                 f"**Q{i}:** {qa.question}",
@@ -915,8 +911,36 @@ def _render_single_result(result_dict: dict, resume_text: str, job_text: str = N
     
     st.divider()
     
-    # Judge評価（F7）
-    judge_evaluation = result_dict.get('judge_evaluation')
+    # Judge評価（F7、ボタン押下型）
+    st.subheader("⚖️ Judge評価結果（3観点評価）")
+    judge_eval_key = f"judge_eval_{id(result_dict)}"
+    if judge_eval_key not in st.session_state:
+        st.session_state[judge_eval_key] = None
+    
+    judge_evaluation = st.session_state.get(judge_eval_key)
+    
+    if not judge_evaluation:
+        if st.button("⚖️ Judge評価を実行", type="primary", key=f"gen_judge_{id(result_dict)}"):
+            with st.spinner("⏳ Judge評価を実行中..."):
+                try:
+                    from f7_judge_evaluation import evaluate_with_judge
+                    judge_evaluation = evaluate_with_judge(
+                        result_dict.get('job_text', ''),
+                        result_dict.get('resume_text', ''),
+                        result_dict.get('matched', []),
+                        result_dict.get('gaps', []),
+                        result_dict.get('improvements'),
+                        interview_qas,
+                        result_dict.get('options', {})
+                    )
+                    st.session_state[judge_eval_key] = judge_evaluation
+                    st.success("✅ Judge評価を完了しました")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ 評価に失敗しました: {e}")
+        else:
+            st.info("💡 ボタンを押すとJudge評価を実行します（コスト削減のため自動実行は行いません）")
+    
     if judge_evaluation:
         st.subheader("⚖️ Judge評価結果（3観点評価）")
         
@@ -965,8 +989,37 @@ def _render_single_result(result_dict: dict, resume_text: str, job_text: str = N
     
     st.divider()
     
-    # 応募メール文面（F8）
-    application_email = result_dict.get('application_email')
+    # 応募メール文面（F8、ボタン押下型）
+    st.subheader("📧 応募メール文面")
+    app_email_key = f"app_email_{id(result_dict)}"
+    if app_email_key not in st.session_state:
+        st.session_state[app_email_key] = None
+    
+    application_email = st.session_state.get(app_email_key)
+    
+    if not application_email:
+        if st.button("📧 応募メール文面を生成", type="primary", key=f"gen_app_email_{id(result_dict)}"):
+            with st.spinner("⏳ 応募メール文面を生成中..."):
+                try:
+                    from f8_generate_application_email import generate_application_email
+                    application_email = generate_application_email(
+                        result_dict.get('job_text', ''),
+                        result_dict.get('resume_text', ''),
+                        result_dict.get('company_info'),
+                        result_dict.get('matched', []),
+                        result_dict.get('gaps', []),
+                        result_dict.get('improvements'),
+                        result_dict.get('summary', ''),
+                        result_dict.get('options', {})
+                    )
+                    st.session_state[app_email_key] = application_email
+                    st.success("✅ 応募メール文面を生成しました")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ 生成に失敗しました: {e}")
+        else:
+            st.info("💡 ボタンを押すと応募メール文面を生成します（コスト削減のため自動生成は行いません）")
+    
     if application_email:
         st.subheader("📧 応募メール文面")
         

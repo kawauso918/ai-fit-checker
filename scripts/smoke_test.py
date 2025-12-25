@@ -29,14 +29,14 @@ def load_sample_inputs():
     with open(sample_file, "r", encoding="utf-8") as f:
         content = f.read()
     
-    # 求人票を抽出（```で囲まれた部分）
-    job_match = re.search(r"## サンプル1: 求人票\s+```(.*?)```", content, re.DOTALL)
+    # 求人票を抽出（セット2の標準テストケースを使用）
+    job_match = re.search(r"## セット2: 通常求人（標準テスト用）\s+### 求人票\s+```(.*?)```", content, re.DOTALL)
     if not job_match:
         raise ValueError("求人票のサンプルが見つかりません")
     job_text = job_match.group(1).strip()
-    
-    # 職務経歴を抽出（```で囲まれた部分）
-    resume_match = re.search(r"## サンプル1: 職務経歴\s+```(.*?)```", content, re.DOTALL)
+
+    # 職務経歴を抽出
+    resume_match = re.search(r"## セット2: 通常求人（標準テスト用）.*?### 職務経歴書\s+```(.*?)```", content, re.DOTALL)
     if not resume_match:
         raise ValueError("職務経歴のサンプルが見つかりません")
     resume_text = resume_match.group(1).strip()
@@ -218,6 +218,13 @@ def main():
 
 if __name__ == "__main__":
     exit(main())
+
+
+
+
+
+
+
 
 
 

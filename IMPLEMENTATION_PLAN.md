@@ -99,3 +99,10 @@
 - **Pydantic**: 既存のPydantic + RetryWithErrorOutputParser方針を維持
 - **README**: 各機能追加ごとに更新
 
+
+
+
+
+
+
+

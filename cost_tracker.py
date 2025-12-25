@@ -143,3 +143,10 @@ class CostTracker:
         count = len(self.costs)
         return f"💰 合計コスト概算: {total:.4f} USD ({count}回のLLM呼び出し)"
 
+
+
+
+
+
+
+

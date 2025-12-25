@@ -135,3 +135,10 @@ def get_chat_response(
     except Exception as e:
         return f"エラーが発生しました: {str(e)}"
 
+
+
+
+
+
+
+

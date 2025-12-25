@@ -202,3 +202,10 @@ def render_requirements_by_category(
         st.divider()
 
 
+
+
+
+
+
+
+

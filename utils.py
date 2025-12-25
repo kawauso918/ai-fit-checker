@@ -72,3 +72,10 @@ def verify_quote_in_text(quote: str, text: str) -> bool:
 
 
 
+
+
+
+
+
+
+

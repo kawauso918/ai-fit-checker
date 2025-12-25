@@ -74,6 +74,13 @@ def ask_job_chat(
             api_key=os.getenv("OPENAI_API_KEY")
         )
     
+    # 入力値の検証とデフォルト値設定
+    # None チェックと文字列型への変換
+    job_text = str(job_text) if job_text is not None and job_text != "" else ""
+    resume_text = str(resume_text) if resume_text is not None and resume_text != "" else ""
+    company_text = str(company_text) if company_text is not None and company_text != "" else None
+    summary = str(summary) if summary is not None and summary != "" else ""
+    
     # 職務経歴書を要約（長い場合は先頭500文字）
     resume_summary = resume_text[:500] + "..." if len(resume_text) > 500 else resume_text
     
@@ -93,7 +100,11 @@ def ask_job_chat(
         for g in gaps[:5]  # 最大5件
     ]) if gaps else "ギャップなし"
     
-    company_info_str = company_text if company_text and company_text.strip() else "企業情報なし"
+    # 企業情報の処理
+    if company_text and isinstance(company_text, str) and company_text.strip():
+        company_info_str = company_text
+    else:
+        company_info_str = "企業情報なし"
     
     # システムプロンプト
     system_prompt = """あなたは求人深掘りチャットのアシスタントです。
@@ -119,11 +130,17 @@ def ask_job_chat(
 """
     
     # コンテキスト情報を準備
+    # job_textが空でない場合のみトリミング
+    if job_text and len(job_text) > 1500:
+        job_text_trimmed = job_text[:1500] + "..."
+    else:
+        job_text_trimmed = job_text if job_text else "求人票情報なし"
+    
     context_info = f"""【求人票】
-{job_text[:1500] if len(job_text) > 1500 else job_text}
+{job_text_trimmed}
 
 【企業情報】
-{company_info_str[:1000] if len(company_info_str) > 1000 else company_info_str}
+{company_info_str[:1000] + "..." if isinstance(company_info_str, str) and len(company_info_str) > 1000 else company_info_str}
 
 【職務経歴書（要約）】
 {resume_summary}
@@ -161,4 +178,11 @@ def ask_job_chat(
         return response.content
     except Exception as e:
         return f"エラーが発生しました: {str(e)}"
+
+
+
+
+
+
+
 

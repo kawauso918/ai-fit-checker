@@ -353,13 +353,8 @@ def main():
 
     # ==================== 分析実行 ====================
     if analyze_button:
-        # 入力チェック
-        if not resume_text:
-            st.error("❌ 職務経歴書を入力してください。")
-            return
-        
+        # 比較モードのチェック（求人票の数）
         if compare_mode:
-            # 比較モード：複数の求人票をチェック
             if not job_texts or len(job_texts) == 0:
                 st.error("❌ 比較モードでは、少なくとも1つの求人票を入力してください。")
                 return
@@ -367,13 +362,11 @@ def main():
                 st.error("❌ 比較モードでは、最大3つの求人票まで入力できます。")
                 return
         else:
-            # 通常モード：1つの求人票をチェック
-            if not job_text:
-                st.error("❌ 求人票を入力してください。")
-                return
-            job_texts = [job_text]
+            # 通常モード：job_textをリストに変換（空でもvalidate_inputs()で検証するため空文字列を含める）
+            job_texts = [job_text] if job_text is not None else [""]
         
-        # 入力検証（求人票/職務経歴書の長さチェック）
+        # 入力検証（求人票/職務経歴書の空チェック・長さチェック）
+        # validate_inputs()で空チェックと短い場合の警告を統一的に処理
         for idx, job_text_item in enumerate(job_texts, 1):
             is_valid, error_message, warning_message = validate_inputs(job_text_item, resume_text)
             if not is_valid:

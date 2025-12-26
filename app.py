@@ -23,6 +23,7 @@ from rag_error_handler import validate_rag_inputs, get_rag_status
 from input_validator import validate_inputs, validate_requirements_extracted
 from ui_components import render_requirements_by_category
 from chat_interface import get_chat_response
+from exporter import export_analysis_to_md, export_email_to_txt, export_chat_to_md
 import os
 
 
@@ -1042,6 +1043,21 @@ def _render_single_result(result_dict: dict, resume_text: str, job_text: str = N
     st.subheader("📩 応募メール下書き")
     st.markdown("**ボタンを押すと応募メール下書きを生成します（コスト対策のため、自動生成は行いません）**")
     
+    # 宛名入力欄
+    with st.expander("📝 宛名情報（任意）", expanded=False):
+        company_name = st.text_input(
+            "会社名（任意）",
+            value="",
+            key=f"email_company_name_{id(result_dict)}",
+            help="例: 株式会社◯◯、未入力の場合は「貴社」を使用します"
+        )
+        contact_person = st.text_input(
+            "担当者名（任意）",
+            value="",
+            key=f"email_contact_person_{id(result_dict)}",
+            help="例: 田中太郎、未入力の場合は「採用ご担当者様」を使用します"
+        )
+    
     # session_stateに下書きを保持
     email_draft_key = f"email_draft_{id(result_dict)}"
     if email_draft_key not in st.session_state:
@@ -1075,6 +1091,8 @@ def _render_single_result(result_dict: dict, resume_text: str, job_text: str = N
                     matched=result_dict.get('matched', []),
                     gaps=result_dict.get('gaps', []),
                     improvements=result_dict.get('improvements'),
+                    company_name=company_name.strip() if company_name else None,
+                    contact_person=contact_person.strip() if contact_person else None,
                     options=options_for_draft
                 )
                 st.session_state[email_draft_key] = email_draft
@@ -1197,6 +1215,59 @@ def _render_single_result(result_dict: dict, resume_text: str, job_text: str = N
    - 「『Python開発経験5年』をアピールする例文を教えてください」
    - 「未経験の技術について、どのように表現すべきですか？」
         """)
+    
+    st.divider()
+    
+    # ダウンロードセクション
+    st.subheader("⬇️ ダウンロード")
+    st.markdown("**分析結果、応募メール下書き、チャット履歴をダウンロードできます**")
+    
+    # ダウンロード用のキー（結果ごとに独立）
+    download_key_base = f"download_{id(result_dict)}"
+    
+    # 1. 分析結果のダウンロード
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        analysis_md = export_analysis_to_md(result_dict)
+        st.download_button(
+            label="📄 分析結果をダウンロード (MD)",
+            data=analysis_md.encode('utf-8'),
+            file_name="analysis_result.md",
+            mime="text/markdown",
+            key=f"{download_key_base}_analysis"
+        )
+    
+    # 2. 応募メール下書きのダウンロード
+    with col2:
+        email_draft = st.session_state.get(email_draft_key)
+        if email_draft:
+            email_txt = export_email_to_txt(email_draft)
+            st.download_button(
+                label="📧 応募メール下書きをダウンロード (TXT)",
+                data=email_txt.encode('utf-8'),
+                file_name="email_draft.txt",
+                mime="text/plain",
+                key=f"{download_key_base}_email"
+            )
+        else:
+            st.info("💡 応募メール下書きを生成するとダウンロードできます")
+    
+    # 3. チャット履歴のダウンロード
+    with col3:
+        chat_history = st.session_state.get(job_chat_key, [])
+        if chat_history:
+            chat_mode = "default"  # モードは将来的に拡張可能
+            chat_md = export_chat_to_md(chat_history, mode=chat_mode)
+            st.download_button(
+                label="💬 チャット履歴をダウンロード (MD)",
+                data=chat_md.encode('utf-8'),
+                file_name=f"job_chat_{chat_mode}.md",
+                mime="text/markdown",
+                key=f"{download_key_base}_chat"
+            )
+        else:
+            st.info("💡 チャット履歴があるとダウンロードできます")
 
 
 def _get_top_strengths(matched, top_n=3):

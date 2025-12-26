@@ -61,6 +61,8 @@ def generate_email_draft(
     matched: List[RequirementWithEvidence],
     gaps: List[Gap],
     improvements: Improvements,
+    company_name: Optional[str] = None,
+    contact_person: Optional[str] = None,
     options: Optional[Dict[str, Any]] = None
 ) -> EmailDraft:
     """
@@ -74,6 +76,8 @@ def generate_email_draft(
         matched: マッチした要件と根拠のペア
         gaps: ギャップのある要件
         improvements: 改善案
+        company_name: 会社名（オプション、未入力の場合は「貴社」を使用）
+        contact_person: 担当者名（オプション、未入力の場合は「採用ご担当者様」を使用）
         options: オプション辞書
             - llm_provider: "openai" or "anthropic"（デフォルト "openai"）
             - model_name: モデル名（デフォルト gpt-4o-mini）
@@ -130,6 +134,18 @@ def generate_email_draft(
         
         company_info_str = company_text if company_text and company_text.strip() else "企業情報なし"
         
+        # 宛名情報を準備
+        if company_name and company_name.strip():
+            if contact_person and contact_person.strip():
+                greeting = f"{company_name} {contact_person}様"
+            else:
+                greeting = f"{company_name} 採用ご担当者様"
+        else:
+            if contact_person and contact_person.strip():
+                greeting = f"{contact_person}様"
+            else:
+                greeting = "採用ご担当者様"
+        
         # プロンプト作成
         prompt_template = PromptTemplate(
             template="""あなたは応募メール下書き作成の専門家です。以下の情報から、効果的な応募メール下書きを生成してください。
@@ -152,6 +168,14 @@ def generate_email_draft(
 【改善案の方向性】
 {improvements_str}
 
+【宛名情報】
+{greeting}
+- 会社名: {company_name_info}
+- 担当者名: {contact_person_info}
+- 上記の宛名情報を本文の冒頭に自然に反映してください
+- 会社名・担当者名が未入力の場合は「採用ご担当者様」「貴社」を使用してください
+- 入力があるときだけ固有名詞として使用し、捏造で勝手に部署名等を追加しないでください
+
 応募メール下書きの要件：
 
 1. **件名案（2〜3件）**
@@ -160,7 +184,7 @@ def generate_email_draft(
 
 2. **本文テンプレート**
    - 丁寧で短め（300-500文字程度）
-   - 冒頭: 応募の動機・志望動機（企業情報がある場合は企業文化に合わせる）
+   - 冒頭: 宛名（上記の宛名情報を使用）+ 応募の動機・志望動機（企業情報がある場合は企業文化に合わせる）
    - 中盤: 職務経歴の要点と求人要件との適合点を簡潔に
    - 終盤: 今後の意欲・連絡先の案内
 
@@ -181,10 +205,11 @@ def generate_email_draft(
 - 簡潔で読みやすい文面
 - 丁寧で誠実なトーン
 - 根拠は必ず職務経歴書または分析結果に基づく
+- 宛名は入力された情報のみを使用し、捏造で勝手に部署名等を追加しない
 
 {format_instructions}
 """,
-            input_variables=["job_text", "company_info", "resume_text", "matched_summary", "matched_evidence_str", "improvements_str"],
+            input_variables=["job_text", "company_info", "resume_text", "matched_summary", "matched_evidence_str", "improvements_str", "greeting", "company_name_info", "contact_person_info"],
             partial_variables={"format_instructions": parser.get_format_instructions()}
         )
         
@@ -194,6 +219,10 @@ def generate_email_draft(
         company_info_trimmed = company_info_str[:1000] + "..." if len(company_info_str) > 1000 else company_info_str
         
         improvements_str = improvements.overall_strategy[:500] if improvements.overall_strategy else "改善案なし"
+        
+        # 宛名情報の説明
+        company_name_info = company_name if company_name and company_name.strip() else "未入力（「貴社」を使用）"
+        contact_person_info = contact_person if contact_person and contact_person.strip() else "未入力（「採用ご担当者様」を使用）"
         
         # LLM実行とパース（最大3回リトライ）
         max_retries = 3
@@ -205,7 +234,10 @@ def generate_email_draft(
                     resume_text=resume_text_trimmed,
                     matched_summary=matched_summary,
                     matched_evidence_str=matched_evidence_str,
-                    improvements_str=improvements_str
+                    improvements_str=improvements_str,
+                    greeting=greeting,
+                    company_name_info=company_name_info,
+                    contact_person_info=contact_person_info
                 )
                 output = llm.invoke(prompt)
                 result = parser.parse(output.content)
@@ -220,7 +252,7 @@ def generate_email_draft(
     except Exception as e:
         print(f"⚠️  応募メール下書き生成に失敗、fallbackを使用: {e}")
         # Fallback: 簡易的な下書き生成
-        email_draft = _fallback_generate_draft(job_text, resume_text, matched)
+        email_draft = _fallback_generate_draft(job_text, resume_text, matched, company_name, contact_person)
     
     return email_draft
 
@@ -228,7 +260,9 @@ def generate_email_draft(
 def _fallback_generate_draft(
     job_text: str,
     resume_text: str,
-    matched: List[RequirementWithEvidence]
+    matched: List[RequirementWithEvidence],
+    company_name: Optional[str] = None,
+    contact_person: Optional[str] = None
 ) -> EmailDraft:
     """
     Fallback: 簡易的な応募メール下書き生成
@@ -237,6 +271,8 @@ def _fallback_generate_draft(
         job_text: 求人票のテキスト
         resume_text: 職務経歴書のテキスト
         matched: マッチした要件と根拠のペア
+        company_name: 会社名（オプション）
+        contact_person: 担当者名（オプション）
     
     Returns:
         EmailDraft: 応募メール下書き
@@ -247,9 +283,25 @@ def _fallback_generate_draft(
         "【応募】求人への応募"
     ]
     
-    body = f"""お世話になっております。
+    # 宛名を決定
+    if company_name and company_name.strip():
+        if contact_person and contact_person.strip():
+            greeting = f"{company_name} {contact_person}様"
+        else:
+            greeting = f"{company_name} 採用ご担当者様"
+    else:
+        if contact_person and contact_person.strip():
+            greeting = f"{contact_person}様"
+        else:
+            greeting = "採用ご担当者様"
+    
+    company_reference = company_name if company_name and company_name.strip() else "貴社"
+    
+    body = f"""{greeting}
 
-この度、貴社の求人に応募させていただきたく、ご連絡いたしました。
+お世話になっております。
+
+この度、{company_reference}の求人に応募させていただきたく、ご連絡いたしました。
 
 【志望動機】
 貴社の事業内容に興味を持ち、応募させていただきました。

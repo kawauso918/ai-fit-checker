@@ -327,17 +327,29 @@ def export_chat_to_md(chat_history: List[tuple], mode: str = "default") -> str:
     Args:
         chat_history: チャット履歴のリスト [(user_message, assistant_response), ...]
         mode: モード名（ファイル名に使用）
+            - "job_understanding": 求人理解
+            - "email_improvement": 応募メール改善
+            - "interview_questions": 面接質問作成
     
     Returns:
         str: Markdown形式の文字列
     """
     lines = []
     
+    # モード名の表示名
+    mode_display_names = {
+        "job_understanding": "📖 求人理解",
+        "email_improvement": "📧 応募メール改善",
+        "interview_questions": "❓ 面接質問作成",
+        "default": "チャット"
+    }
+    mode_display = mode_display_names.get(mode, mode)
+    
     # ヘッダー
     lines.append("# 求人深掘りチャット履歴")
     lines.append("")
     lines.append(f"**生成日時**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    lines.append(f"**モード**: {mode}")
+    lines.append(f"**モード**: {mode_display}")
     lines.append(f"**会話数**: {len(chat_history)}件")
     lines.append("")
     lines.append("---")

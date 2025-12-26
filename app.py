@@ -1150,13 +1150,40 @@ def _render_single_result(result_dict: dict, resume_text: str, job_text: str = N
     st.subheader("🧠 求人深掘りチャット")
     st.markdown("**求人の解釈、応募戦略、応募メールの改善案を質問できます**")
     
-    # session_stateにチャット履歴を保持（結果ごとに独立）
-    job_chat_key = f"job_chat_history_{id(result_dict)}"
-    if job_chat_key not in st.session_state:
-        st.session_state[job_chat_key] = []
+    # モード選択
+    chat_mode = st.radio(
+        "チャットモードを選択",
+        options=["job_understanding", "email_improvement", "interview_questions"],
+        format_func=lambda x: {
+            "job_understanding": "📖 求人理解",
+            "email_improvement": "📧 応募メール改善",
+            "interview_questions": "❓ 面接質問作成"
+        }[x],
+        key=f"chat_mode_{id(result_dict)}",
+        horizontal=True
+    )
+    
+    # モードごとの説明
+    mode_descriptions = {
+        "job_understanding": "求人票の要件や業務内容を解釈し、応募者が理解すべきポイントを明確にします。",
+        "email_improvement": "応募メールの文面を改善し、より効果的な表現を提案します。",
+        "interview_questions": "面接で想定される質問を作成し、回答の骨子を提示します。"
+    }
+    st.info(f"💡 **{mode_descriptions[chat_mode]}**")
+    
+    # session_stateにチャット履歴を保持（結果ごとに独立、モードごとに分離）
+    job_chat_key_base = f"job_chat_history_{id(result_dict)}"
+    if job_chat_key_base not in st.session_state:
+        st.session_state[job_chat_key_base] = {}
+    
+    # モードごとの履歴を取得
+    chat_history_by_mode = st.session_state.get(job_chat_key_base, {})
+    if chat_mode not in chat_history_by_mode:
+        chat_history_by_mode[chat_mode] = []
+        st.session_state[job_chat_key_base] = chat_history_by_mode
     
     # チャット履歴を表示
-    chat_history = st.session_state.get(job_chat_key, [])
+    chat_history = chat_history_by_mode.get(chat_mode, [])
     if chat_history:
         st.markdown("### チャット履歴")
         for i, (user_msg, assistant_msg) in enumerate(chat_history, 1):
@@ -1165,7 +1192,13 @@ def _render_single_result(result_dict: dict, resume_text: str, job_text: str = N
                 st.markdown(f"**アシスタント**: {assistant_msg}")
     
     # チャット入力（st.chat_inputを使用）
-    if prompt := st.chat_input("質問を入力してください（例: この要件は何を意味しますか？ / 応募戦略を教えてください）"):
+    mode_placeholders = {
+        "job_understanding": "質問を入力してください（例: この要件『Python開発経験3年以上』は具体的に何を求めていますか？）",
+        "email_improvement": "改善したい文面を入力してください（例: 応募メールの冒頭部分を改善したいです）",
+        "interview_questions": "質問を入力してください（例: この求人で想定される面接質問を作成してください）"
+    }
+    
+    if prompt := st.chat_input(mode_placeholders[chat_mode]):
         with st.spinner("考え中..."):
             # チャット応答を生成
             assistant_response = ask_job_chat(
@@ -1178,43 +1211,71 @@ def _render_single_result(result_dict: dict, resume_text: str, job_text: str = N
                 gaps=result_dict.get('gaps', []),
                 summary=result_dict.get('summary', ''),
                 chat_history=chat_history,
+                mode=chat_mode,
                 options=result_dict.get('options', {})
             )
             
-            # チャット履歴に追加
+            # チャット履歴に追加（モードごとに分離）
             chat_history.append((prompt, assistant_response))
-            st.session_state[job_chat_key] = chat_history
+            chat_history_by_mode[chat_mode] = chat_history
+            st.session_state[job_chat_key_base] = chat_history_by_mode
             
             # ページをリロードして履歴を表示
             st.rerun()
     
-    # 質問例を表示
+    # 質問例を表示（モードごとに切り替え）
     with st.expander("💡 質問例", expanded=False):
-        st.markdown("""
-以下のような質問ができます：
+        if chat_mode == "job_understanding":
+            st.markdown("""
+**📖 求人理解モードの質問例：**
 
-1. **求人の解釈**
+1. **要件の解釈**
    - 「この要件『Python開発経験3年以上』は具体的に何を求めていますか？」
    - 「『フルスタック開発経験』とはどのような業務を指しますか？」
+   - 「『チームリーダー経験』はどの程度の規模を想定していますか？」
 
-2. **応募戦略**
-   - 「この求人で強調すべき点は何ですか？」
-   - 「避けるべき点や注意すべき点はありますか？」
-   - 「ギャップがある要件について、どのように対応すべきですか？」
+2. **業務内容の理解**
+   - 「この求人の業務内容を詳しく教えてください」
+   - 「『アジャイル開発』とは具体的にどのような進め方ですか？」
 
-3. **応募メールの改善案**
-   - 「応募メールの冒頭部分を改善したいです。どのような表現が良いですか？」
+3. **スキルレベルの確認**
+   - 「『上級者レベル』とはどの程度のスキルを指しますか？」
+   - 「この求人で求められる技術レベルはどの程度ですか？」
+            """)
+        elif chat_mode == "email_improvement":
+            st.markdown("""
+**📧 応募メール改善モードの質問例：**
+
+1. **文面の改善**
+   - 「応募メールの冒頭部分を改善したいです。現在の文面: [文面を貼り付け]」
    - 「志望動機の書き方を教えてください」
    - 「職務経歴の要点を簡潔に伝える方法は？」
 
-4. **確認すべき点**
-   - 「面接前に確認すべき質問はありますか？」
-   - 「この求人で不明な点を確認する方法は？」
-
-5. **具体的な例文**
-   - 「『Python開発経験5年』をアピールする例文を教えてください」
+2. **表現の改善**
+   - 「この文をより丁寧な表現に変えたいです: [文面を貼り付け]」
    - 「未経験の技術について、どのように表現すべきですか？」
-        """)
+
+3. **構成の改善**
+   - 「応募メールの構成を改善したいです。現在の構成: [構成を説明]」
+   - 「企業文化に合わせた文面にしたいです」
+            """)
+        else:  # interview_questions
+            st.markdown("""
+**❓ 面接質問作成モードの質問例：**
+
+1. **想定質問の作成**
+   - 「この求人で想定される面接質問を作成してください」
+   - 「強みを深掘りする質問を作成してください」
+   - 「ギャップについて突っ込まれる質問を想定してください」
+
+2. **回答の準備**
+   - 「『Python開発経験5年』について、面接でどのように答えるべきですか？」
+   - 「未経験の技術について、面接でどのように説明すべきですか？」
+
+3. **逆質問の作成**
+   - 「面接で質問すべき内容を教えてください」
+   - 「この求人で確認すべき点を質問形式で教えてください」
+            """)
     
     st.divider()
     
@@ -1255,14 +1316,22 @@ def _render_single_result(result_dict: dict, resume_text: str, job_text: str = N
     
     # 3. チャット履歴のダウンロード
     with col3:
-        chat_history = st.session_state.get(job_chat_key, [])
-        if chat_history:
-            chat_mode = "default"  # モードは将来的に拡張可能
-            chat_md = export_chat_to_md(chat_history, mode=chat_mode)
+        # チャット履歴を取得（モードごとに分離）
+        chat_history_by_mode = st.session_state.get(job_chat_key_base, {})
+        # 現在選択中のモードを取得（デフォルトはjob_understanding）
+        current_chat_mode = st.session_state.get(f"chat_mode_{id(result_dict)}", "job_understanding")
+        current_chat_history = chat_history_by_mode.get(current_chat_mode, [])
+        if current_chat_history:
+            mode_display_name = {
+                "job_understanding": "job_understanding",
+                "email_improvement": "email_improvement",
+                "interview_questions": "interview_questions"
+            }.get(current_chat_mode, "default")
+            chat_md = export_chat_to_md(current_chat_history, mode=mode_display_name)
             st.download_button(
                 label="💬 チャット履歴をダウンロード (MD)",
                 data=chat_md.encode('utf-8'),
-                file_name=f"job_chat_{chat_mode}.md",
+                file_name=f"job_chat_{mode_display_name}.md",
                 mime="text/markdown",
                 key=f"{download_key_base}_chat"
             )

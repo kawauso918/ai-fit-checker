@@ -210,10 +210,10 @@ def export_analysis_to_md(result_dict: Dict[str, Any]) -> str:
                     lines.append("```")
                     lines.append("")
         
-        if improvements.action_plans:
+        if improvements.action_items:
             lines.append("## 行動計画")
             lines.append("")
-            for plan in improvements.action_plans:
+            for plan in improvements.action_items:
                 priority = plan.priority.value if hasattr(plan.priority, 'value') else plan.priority
                 impact = plan.estimated_impact.value if hasattr(plan.estimated_impact, 'value') else plan.estimated_impact
                 lines.append(f"### [{priority}] {plan.action}")

@@ -193,7 +193,8 @@ def export_analysis_to_md(result_dict: Dict[str, Any]) -> str:
             lines.append("## 職務経歴書の編集・追記案")
             lines.append("")
             for i, edit in enumerate(improvements.resume_edits, 1):
-                lines.append(f"### {i}. {edit.title}")
+                edit_type_label = {"add": "追記", "emphasize": "強調", "rewrite": "書き換え"}.get(edit.edit_type, edit.edit_type)
+                lines.append(f"### {i}. [{edit_type_label}] {edit.target_gap}")
                 if edit.template:
                     lines.append("**テンプレート**:")
                     lines.append("")
@@ -214,15 +215,13 @@ def export_analysis_to_md(result_dict: Dict[str, Any]) -> str:
             lines.append("")
             for plan in improvements.action_plans:
                 priority = plan.priority.value if hasattr(plan.priority, 'value') else plan.priority
-                lines.append(f"### [{priority}] {plan.title}")
+                impact = plan.estimated_impact.value if hasattr(plan.estimated_impact, 'value') else plan.estimated_impact
+                lines.append(f"### [{priority}] {plan.action}")
                 lines.append("")
-                if plan.description:
-                    lines.append(plan.description)
-                    lines.append("")
-                if plan.steps:
-                    for step in plan.steps:
-                        lines.append(f"- {step}")
-                    lines.append("")
+                lines.append(f"**根拠**: {plan.rationale}")
+                lines.append("")
+                lines.append(f"**期待される効果**: {impact}")
+                lines.append("")
         
         lines.append("---")
         lines.append("")

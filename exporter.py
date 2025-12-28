@@ -162,16 +162,17 @@ def export_analysis_to_md(result_dict: Dict[str, Any]) -> str:
         
         for i, gap in enumerate(gaps, 1):
             req = gap.requirement
-            
+            evidence = gap.evidence
+
             lines.append(f"## {i}. [{req.req_id}] {req.description}")
             lines.append("")
             lines.append(f"- **要件タイプ**: {req.category.value.upper()}")
             if req.category:
                 lines.append(f"- **カテゴリ**: {req.category.value}")
-            if gap.reason:
-                lines.append(f"- **不足理由**: {gap.reason}")
-            if gap.improvement_direction:
-                lines.append(f"- **改善の方向性**: {gap.improvement_direction}")
+            if hasattr(evidence, 'reason') and evidence.reason:
+                lines.append(f"- **不足理由**: {evidence.reason}")
+            if hasattr(evidence, 'confidence') and evidence.confidence is not None:
+                lines.append(f"- **一致度**: {evidence.confidence:.0%}")
             lines.append("")
         
         lines.append("---")
